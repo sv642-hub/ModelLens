@@ -84,10 +84,19 @@ def run_activation_patching(
             "normalized_effect": effect / (total_effect + 1e-10),
         }
 
+    total_gap = clean_metric - corrupted_metric
+    for _k, row in patch_effects.items():
+        pm = row["patched_metric"]
+        recovery = pm - corrupted_metric
+        row["recovery_toward_clean"] = recovery
+        denom = total_gap if abs(total_gap) > 1e-12 else 1e-10
+        row["recovery_fraction_of_gap"] = recovery / denom
+
     return {
         "clean_metric": clean_metric,
         "corrupted_metric": corrupted_metric,
         "total_effect": corrupted_metric - clean_metric,
+        "total_gap_clean_minus_corrupted": total_gap,
         "patch_effects": patch_effects,
         "layers_ordered": list(layer_names),
     }
@@ -136,9 +145,15 @@ def _run_with_patch(model, available, inputs, target_layer, patch_activation, **
 
 
 def _forward(model, inputs, **kwargs):
-    """Run forward pass handling different input types."""
-    if isinstance(inputs, dict) or hasattr(inputs, "input_ids"):
+    """Run forward pass handling HF dicts and plain tensors (vanilla PyTorch expects a tensor)."""
+    if isinstance(inputs, dict):
+        if "input_ids" in inputs:
+            return model(inputs["input_ids"], **kwargs)
+        if "input" in inputs:
+            return model(inputs["input"], **kwargs)
         return model(**inputs, **kwargs)
+    if hasattr(inputs, "input_ids"):
+        return model(inputs["input_ids"], **kwargs)
     return model(inputs, **kwargs)
 
 

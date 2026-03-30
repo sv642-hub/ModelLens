@@ -111,10 +111,15 @@ def _extract_hook_attention(lens, inputs, layer_names, **kwargs) -> Dict:
     for name in layer_names:
         lens.hooks.attach_custom(lens.model, name, make_attn_hook(name))
 
-    # Run forward pass
+    # Run forward pass (vanilla PyTorch models take token ids, not HF-style kwargs)
     with torch.no_grad():
         if isinstance(inputs, dict):
-            output = lens.model(**inputs, **kwargs)
+            if "input_ids" in inputs:
+                output = lens.model(inputs["input_ids"], **kwargs)
+            elif "input" in inputs:
+                output = lens.model(inputs["input"], **kwargs)
+            else:
+                output = lens.model(**inputs, **kwargs)
         else:
             output = lens.model(inputs, **kwargs)
 
@@ -170,3 +175,58 @@ def head_summary(attention_results: Dict) -> Dict:
         }
 
     return summary
+
+
+def compute_attention_pattern_metrics(attention_results: Dict) -> Dict:
+    """
+    Heuristic attention summaries beyond raw matrices: entropy, argmax locality,
+    and a coarse ``pattern_hint`` string per layer (best-effort, not ground truth).
+
+    For HF-style weights ``(batch, heads, seq, seq)``; for 3D averaged weights,
+    a single pseudo-head is reported.
+    """
+    out: Dict = {}
+    maps = attention_results.get("attention_maps") or {}
+    for name, data in maps.items():
+        w = data["weights"]
+        if hasattr(w, "detach"):
+            w = w.detach().float()
+        if w.dim() == 4:
+            b, nh, sq, _ = w.shape
+            ent = -(w * torch.log(w + 1e-12)).sum(dim=-1)
+            mean_ent = float(ent.mean().item())
+            # argmax key per query position, batch 0
+            am = w[0].argmax(dim=-1)  # (heads, seq)
+            q_idx = torch.arange(sq, device=w.device).view(1, -1).expand(nh, -1).float()
+            dist = (am.float() - q_idx).abs().mean()
+            max_key = am.float().mean()
+            hint = "diffuse"
+            if mean_ent < 1.5:
+                hint = "peaked"
+            elif mean_ent > 3.0:
+                hint = "diffuse"
+            if dist < 1.5:
+                hint = hint + "_local"
+            out[name] = {
+                "mean_entropy": mean_ent,
+                "mean_argmax_distance": float(dist.item()),
+                "pattern_hint": hint,
+                "num_heads": nh,
+            }
+        elif w.dim() == 3:
+            w0 = w[0]
+            ent = -(w0 * torch.log(w0 + 1e-12)).sum(dim=-1)
+            out[name] = {
+                "mean_entropy": float(ent.mean().item()),
+                "mean_argmax_distance": float(
+                    (w0.argmax(dim=-1).float() - torch.arange(w0.shape[0], device=w.device).float())
+                    .abs()
+                    .mean()
+                    .item()
+                ),
+                "pattern_hint": "averaged_heads",
+                "num_heads": 1,
+            }
+        else:
+            out[name] = {"pattern_hint": "unsupported_shape"}
+    return {"per_layer": out}

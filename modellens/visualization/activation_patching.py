@@ -84,10 +84,51 @@ def format_patching_summary_html(patching_result: Dict[str, Any]) -> str:
     c = float(patching_result["clean_metric"])
     r = float(patching_result["corrupted_metric"])
     te = float(patching_result["total_effect"])
+    gap = patching_result.get("total_gap_clean_minus_corrupted")
+    gap_s = f"<br/><b>Gap (clean − corrupted):</b> {gap:.4f}" if gap is not None else ""
     return (
         f"<div style='font-family:system-ui;line-height:1.5'>"
         f"<b>Clean metric:</b> {c:.4f}<br/>"
         f"<b>Corrupted metric:</b> {r:.4f}<br/>"
         f"<b>Total effect (corrupted − clean):</b> {te:.4f}"
+        f"{gap_s}"
         f"</div>"
     )
+
+
+def plot_patching_recovery_fraction(
+    patching_result: Dict[str, Any],
+    *,
+    title: Optional[str] = None,
+    width: int = 900,
+    height: int = 520,
+) -> "go.Figure":
+    """
+    How much of the clean–corrupted gap each patch recovers toward clean
+    (``recovery_fraction_of_gap``); values outside [-1, 1] can occur with odd metrics.
+    """
+    pe = patching_result.get("patch_effects") or {}
+    names = list(pe.keys())
+    vals = [float(pe[k].get("recovery_fraction_of_gap", 0.0)) for k in names]
+    labels = [truncate_label(m, max_len=48) for m in names]
+    order = np.argsort(np.abs(vals))[::-1]
+    labels = [labels[i] for i in order]
+    vals = [vals[i] for i in order]
+    fig = go.Figure(
+        go.Bar(
+            x=vals,
+            y=labels,
+            orientation="h",
+            marker_color="#0d9488",
+            hovertemplate="module=%{y}<br>recovery fraction=%{x:.4f}<extra></extra>",
+        )
+    )
+    fig.update_xaxes(title_text="Recovery fraction of (clean − corrupted) gap")
+    fig.update_layout(
+        **default_plotly_layout(
+            title=title or "Patching — recovery toward clean (per module)",
+            width=width,
+            height=height,
+        )
+    )
+    return fig

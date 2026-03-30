@@ -21,11 +21,13 @@ setup(
             "matplotlib>=3.7.0",
             "plotly>=5.15.0",
             "pandas>=2.0.0",
+            "nbformat>=4.2.0",
         ],
         "app": [
             "gradio>=4.0.0",
             "plotly>=5.15.0",
             "pandas>=2.0.0",
+            "nbformat>=4.2.0",
         ],
         "dev": [],
     },

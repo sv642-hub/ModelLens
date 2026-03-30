@@ -90,8 +90,14 @@ def _get_input_embeddings(lens, inputs, **kwargs) -> Optional[torch.Tensor]:
     for name, module in model.named_modules():
         if any(en in name.lower() for en in embed_names):
             if isinstance(module, torch.nn.Embedding):
+                if isinstance(inputs, dict) and "input_ids" in inputs:
+                    ids = inputs["input_ids"]
+                elif isinstance(inputs, torch.Tensor):
+                    ids = inputs
+                else:
+                    ids = inputs
                 with torch.no_grad():
-                    return module(inputs)
+                    return module(ids)
 
     return None
 

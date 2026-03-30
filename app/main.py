@@ -1,5 +1,5 @@
 """
-ModelLens Gradio shell — optimized for live class demos.
+ModelLens Gradio shell — transformer inspection (forward trace, gradients, patching).
 
 Run:  python -m app.main
    or:  gradio app/main.py (if configured)
@@ -12,18 +12,23 @@ import gradio as gr
 from app.components import (
     build_overview,
     load_huggingface_lens,
+    load_toy_lens,
     presentation_story,
     run_attn_fig,
+    run_backward_fig,
     run_embed_fig,
+    run_forward_figs,
     run_logit_figs,
     run_patch_fig,
     run_residual_fig,
+    snapshot_metric_fig,
 )
 from app.demo_data import (
     APP_TITLE,
     DEFAULT_CORRUPTED,
     DEFAULT_MODEL,
     DEFAULT_PROMPT,
+    TOY_PROMPT_HINT,
 )
 
 _GRADIO_THEME = gr.themes.Soft(
@@ -39,100 +44,206 @@ footer { visibility: hidden; }
 
 def _need_lens(lens):
     if lens is None:
-        raise gr.Error("Load a Hugging Face model first (Overview tab).")
+        raise gr.Error(
+            "Load a model first: pick **Hugging Face** or **ToyTransformer**, then **Load model**."
+        )
     return lens
+
+
+def _tab_err(step: str, fn, *args, **kwargs):
+    """Turn unexpected failures into a single Gradio error banner."""
+    try:
+        return fn(*args, **kwargs)
+    except gr.Error:
+        raise
+    except Exception as e:
+        raise gr.Error(f"{step}: {type(e).__name__}: {e}") from e
 
 
 def create_app():
     with gr.Blocks(title=APP_TITLE) as demo:
         gr.Markdown(
             f"# {APP_TITLE}\n"
-            "Guided tour of **attention**, **logit lens**, **activation patching**, "
-            "and **residual / embedding** views. Built on Plotly for crisp, hover-rich figures."
+            "Inspect **forward flow**, **attention**, **logit evolution**, **activation patching**, "
+            "**residuals**, and **gradient norms**. "
+            "Use a **Hugging Face** causal LM or the offline **ToyTransformer** (same analyses, different backends)."
         )
 
         lens_state = gr.State(None)
+        model_name_state = gr.State("")
+        backend_state = gr.State("hf")
 
+        gr.Markdown(
+            "**Model source** — HF models need a first-time download; Toy is instant and offline "
+            "(random weights, demo-only)."
+        )
         with gr.Row():
+            backend_in = gr.Radio(
+                choices=[("Hugging Face causal LM", "hf"), ("ToyTransformer (local PyTorch)", "toy")],
+                value="hf",
+                label="Backend",
+            )
             model_in = gr.Dropdown(
                 choices=["gpt2", "gpt2-medium", "distilgpt2"],
                 value=DEFAULT_MODEL,
-                label="Hugging Face causal LM",
+                label="Hugging Face model id",
+                scale=2,
             )
             load_btn = gr.Button("Load model", variant="primary")
             load_status = gr.Markdown()
 
-        def _load(name):
-            lens, _ = load_huggingface_lens(name)
-            return lens, f"Loaded **`{name}`** — tokenizer attached; use eager attention for weights."
+        toy_hint = gr.Markdown(visible=False)
 
-        load_btn.click(_load, inputs=[model_in], outputs=[lens_state, load_status])
+        def _sync_backend(b):
+            return gr.Markdown.update(visible=(b == "toy"), value=f"_{TOY_PROMPT_HINT}_")
+
+        backend_in.change(_sync_backend, [backend_in], [toy_hint])
+
+        def _load(backend, hf_name):
+            if backend == "toy":
+                lens, _ = load_toy_lens()
+                return (
+                    lens,
+                    "Loaded **ToyTransformer** (`examples/toy_transformer.py`) — random weights; no tokenizer.",
+                    "ToyTransformer (pytorch)",
+                    "toy",
+                    gr.Markdown.update(visible=True, value=f"_{TOY_PROMPT_HINT}_"),
+                )
+            lens, _ = load_huggingface_lens(hf_name)
+            return (
+                lens,
+                f"Loaded **`{hf_name}`** — tokenizer attached; eager attention for weights.",
+                hf_name,
+                "hf",
+                gr.Markdown.update(visible=False),
+            )
+
+        load_btn.click(
+            _load,
+            inputs=[backend_in, model_in],
+            outputs=[lens_state, load_status, model_name_state, backend_state, toy_hint],
+        )
 
         with gr.Tabs():
+            # ---- 1 Overview ----
             with gr.Tab("1 · Model overview"):
+                gr.Markdown(
+                    "_Parameter counts by prefix complement the shape trace — goal is a quick mental model of the stack._"
+                )
                 prompt_ov = gr.Textbox(
-                    label="Prompt for shape trace",
+                    label="Prompt or text (Toy: char-derived token ids)",
                     value=DEFAULT_PROMPT,
                     lines=2,
                 )
                 run_ov = gr.Button("Refresh overview", variant="primary")
                 summary_md = gr.Markdown()
-                fig_shape = gr.Plot(label="Shape trace")
+                with gr.Row():
+                    fig_params = gr.Plot(label="Parameters by submodule")
+                    fig_shape = gr.Plot(label="Shape trace (table)")
                 mermaid_md = gr.Markdown()
 
-                def _ov(prompt, lens):
+                def _ov(prompt, lens, mname):
                     lens = _need_lens(lens)
-                    fig, md, mer = build_overview(lens, prompt)
-                    return md, fig, mer
+                    return _tab_err(
+                        "Overview",
+                        lambda: build_overview(lens, prompt, model_name=mname or ""),
+                    )
 
-                run_ov.click(_ov, [prompt_ov, lens_state], [summary_md, fig_shape, mermaid_md])
+                def _ov_unpack(prompt, lens, mname):
+                    fs, fp, md, mer = _ov(prompt, lens, mname)
+                    return md, fp, fs, mer
 
-            with gr.Tab("2 · Attention"):
-                prompt_a = gr.Textbox(label="Prompt", value=DEFAULT_PROMPT, lines=2)
-                layer_i = gr.Slider(0, 11, value=0, step=1, label="Layer index")
-                head_i = gr.Slider(0, 11, value=0, step=1, label="Head index")
+                run_ov.click(
+                    _ov_unpack,
+                    [prompt_ov, lens_state, model_name_state],
+                    [summary_md, fig_params, fig_shape, mermaid_md],
+                )
+
+            # ---- 2 Forward ----
+            with gr.Tab("2 · Forward pass"):
+                gr.Markdown(
+                    "Per-module activation summaries in **execution order**. "
+                    "Cap hooked modules so large HF models stay responsive."
+                )
+                prompt_fw = gr.Textbox(label="Prompt / text", value=DEFAULT_PROMPT, lines=2)
+                max_mod = gr.Slider(
+                    20, 200, value=120, step=10, label="Max modules to hook"
+                )
+                run_fw = gr.Button("Run forward trace", variant="primary")
+                fig_fw_norm = gr.Plot(label="Mean ‖·‖ (output summary)")
+                fig_fw_last = gr.Plot(label="Last-token hidden L2 norm")
+
+                def _fw(p, mm, lens):
+                    lens = _need_lens(lens)
+                    return _tab_err("Forward trace", run_forward_figs, lens, p, mm)
+
+                run_fw.click(_fw, [prompt_fw, max_mod, lens_state], [fig_fw_norm, fig_fw_last])
+
+            # ---- 3 Attention ----
+            with gr.Tab("3 · Attention"):
+                gr.Markdown(
+                    "_Layer / head sliders clamp to the loaded model; try 0/0 first._"
+                )
+                prompt_a = gr.Textbox(label="Prompt / text", value=DEFAULT_PROMPT, lines=2)
+                layer_i = gr.Slider(0, 24, value=0, step=1, label="Layer index")
+                head_i = gr.Slider(0, 16, value=0, step=1, label="Head index")
                 run_a = gr.Button("Plot attention", variant="primary")
+                attn_metrics = gr.HTML()
                 fig_a = gr.Plot()
 
                 def _attn(p, li, hi, lens):
                     lens = _need_lens(lens)
-                    return run_attn_fig(lens, p, int(li), int(hi))
+                    return _tab_err("Attention", run_attn_fig, lens, p, int(li), int(hi))
 
-                run_a.click(_attn, [prompt_a, layer_i, head_i, lens_state], [fig_a])
+                run_a.click(_attn, [prompt_a, layer_i, head_i, lens_state], [fig_a, attn_metrics])
 
-            with gr.Tab("3 · Logit lens"):
-                prompt_l = gr.Textbox(label="Prompt", value=DEFAULT_PROMPT, lines=2)
+            # ---- 4 Logit lens ----
+            with gr.Tab("4 · Logit / representation"):
+                gr.Markdown(
+                    "_Without an HF tokenizer, labels show token ids (Toy path). "
+                    "Flat / low confidence is common on untrained models._"
+                )
+                prompt_l = gr.Textbox(label="Prompt / text", value=DEFAULT_PROMPT, lines=2)
                 run_l = gr.Button("Run logit lens", variant="primary")
-                fig_le = gr.Plot(label="Top-1 probability trajectory")
+                fig_le = gr.Plot(label="Top-1 token trajectory")
                 fig_lh = gr.Plot(label="Top-k heatmap across layers")
+                fig_lc = gr.Plot(label="Entropy · top-1 · margin")
 
                 def _logit(p, lens):
                     lens = _need_lens(lens)
-                    evo, heat = run_logit_figs(lens, p)
-                    return evo, heat
+                    return _tab_err("Logit lens", run_logit_figs, lens, p)
 
-                run_l.click(_logit, [prompt_l, lens_state], [fig_le, fig_lh])
+                run_l.click(_logit, [prompt_l, lens_state], [fig_le, fig_lh, fig_lc])
 
-            with gr.Tab("4 · Activation patching"):
+            # ---- 5 Patching ----
+            with gr.Tab("5 · Causal patching"):
+                gr.Markdown(
+                    "**Effect** = normalized metric change when swapping activations. "
+                    "**Recovery** = fraction of the clean–corrupted gap closed toward clean. "
+                    "Sequences are truncated to a common length if needed."
+                )
                 clean = gr.Textbox(label="Clean prompt", value=DEFAULT_PROMPT, lines=2)
                 corrupted = gr.Textbox(
-                    label="Corrupted prompt (same length)",
+                    label="Corrupted prompt (same length recommended)",
                     value=DEFAULT_CORRUPTED,
                     lines=2,
                 )
                 run_p = gr.Button("Run patching", variant="primary")
                 patch_html = gr.HTML()
-                fig_p = gr.Plot()
+                with gr.Row():
+                    fig_p = gr.Plot(label="Normalized causal effect")
+                    fig_pr = gr.Plot(label="Recovery fraction")
 
-                def _patch(c, r, lens):
+                def _patch_out(c, r, lens):
                     lens = _need_lens(lens)
-                    fig, html = run_patch_fig(lens, c, r)
-                    return html, fig
+                    fe, fr, html = _tab_err("Patching", run_patch_fig, lens, c, r)
+                    return html, fe, fr
 
-                run_p.click(_patch, [clean, corrupted, lens_state], [patch_html, fig_p])
+                run_p.click(_patch_out, [clean, corrupted, lens_state], [patch_html, fig_p, fig_pr])
 
-            with gr.Tab("5 · Residual & embeddings"):
-                prompt_re = gr.Textbox(label="Prompt", value=DEFAULT_PROMPT, lines=2)
+            # ---- 6 Residual & embeddings ----
+            with gr.Tab("6 · Residual & embeddings"):
+                prompt_re = gr.Textbox(label="Prompt / text", value=DEFAULT_PROMPT, lines=2)
                 run_re = gr.Button("Residual stream", variant="primary")
                 run_em = gr.Button("Embedding similarity")
                 fig_re = gr.Plot(label="Residual contribution")
@@ -140,19 +251,66 @@ def create_app():
 
                 def _res(p, lens):
                     lens = _need_lens(lens)
-                    return run_residual_fig(lens, p)
+                    return _tab_err("Residual stream", run_residual_fig, lens, p)
 
                 def _emb(p, lens):
                     lens = _need_lens(lens)
-                    return run_embed_fig(lens, p)
+                    return _tab_err("Embeddings", run_embed_fig, lens, p)
 
                 run_re.click(_res, [prompt_re, lens_state], [fig_re])
                 run_em.click(_emb, [prompt_re, lens_state], [fig_em])
 
-            with gr.Tab("6 · Presentation story"):
+            # ---- 7 Gradients ----
+            with gr.Tab("7 · Gradient flow"):
                 gr.Markdown(
-                    "**One-click narrative** — structure → attention → logit lens → patching. "
-                    "Use the same prompts as tab 4 for a coherent causal story."
+                    "Uses a **surrogate** loss (mean logits or CE on last token). "
+                    "Bars = summed ‖∇‖ per module prefix (relative comparison)."
+                )
+                prompt_g = gr.Textbox(label="Prompt / text", value=DEFAULT_PROMPT, lines=2)
+                loss_mode = gr.Radio(
+                    choices=["logits_mean", "last_token_ce"],
+                    value="logits_mean",
+                    label="Loss",
+                )
+                run_g = gr.Button("Run backward trace", variant="primary")
+                fig_g = gr.Plot()
+
+                def _grad(p, mode, lens):
+                    lens = _need_lens(lens)
+                    return _tab_err("Gradient flow", run_backward_fig, lens, p, mode)
+
+                run_g.click(_grad, [prompt_g, loss_mode, lens_state], [fig_g])
+
+            # ---- 8 Training snapshots ----
+            with gr.Tab("8 · Training snapshots"):
+                gr.Markdown(
+                    "Paste JSON from `json.dumps(store.to_list())` where `store` is a "
+                    "`SnapshotStore`. Each object needs a **`step`** field; metrics live in "
+                    "`metrics` or as top-level keys (e.g. `train_loss`)."
+                )
+                snap_json = gr.Textbox(
+                    label="JSON array",
+                    lines=6,
+                    placeholder='[{"step": 0, "train_loss": 2.5, "metrics": {"grad_norm": 0.5}}, ...]',
+                )
+                metric_key = gr.Textbox(
+                    label="Metric key (looks in `metrics` first, then top-level)",
+                    value="train_loss",
+                )
+                run_snap = gr.Button("Plot metric vs step", variant="secondary")
+                fig_snap = gr.Plot()
+
+                run_snap.click(
+                    snapshot_metric_fig,
+                    [snap_json, metric_key],
+                    [fig_snap],
+                )
+
+            # ---- 9 Story ----
+            with gr.Tab("9 · Presentation story"):
+                gr.Markdown(
+                    "**Guided walkthrough** — shapes → attention → logit lens → patching. "
+                    "If anything fails, the summary shows the error instead of a silent tab break."
                 )
                 ps_clean = gr.Textbox(label="Clean prompt", value=DEFAULT_PROMPT, lines=2)
                 ps_cor = gr.Textbox(label="Corrupted prompt", value=DEFAULT_CORRUPTED, lines=2)
@@ -163,23 +321,35 @@ def create_app():
                 with gr.Row():
                     s_logit_hm = gr.Plot()
                     s_logit_evo = gr.Plot()
-                s_patch = gr.Plot()
+                s_logit_conf = gr.Plot()
+                with gr.Row():
+                    s_patch = gr.Plot()
+                    s_patch_rec = gr.Plot()
 
                 def _story(c, r, lens):
                     lens = _need_lens(lens)
-                    fig_shape, fig_attn, hm, evo, fig_patch, sm = presentation_story(
-                        lens, c, r
+                    fig_shape, fig_attn, hm, evo, conf, fig_patch, fig_patch_rec, sm = (
+                        presentation_story(lens, c, r)
                     )
-                    return sm, fig_shape, fig_attn, hm, evo, fig_patch
+                    return sm, fig_shape, fig_attn, hm, evo, conf, fig_patch, fig_patch_rec
 
                 run_story.click(
                     _story,
                     [ps_clean, ps_cor, lens_state],
-                    [story_md, s_shape, s_attn, s_logit_hm, s_logit_evo, s_patch],
+                    [
+                        story_md,
+                        s_shape,
+                        s_attn,
+                        s_logit_hm,
+                        s_logit_evo,
+                        s_logit_conf,
+                        s_patch,
+                        s_patch_rec,
+                    ],
                 )
 
         gr.Markdown(
-            "_Tip: first load **`gpt2`** on a good network connection; subsequent analysis is local._"
+            "_After loading **gpt2** or **ToyTransformer**, all analysis runs locally in-process._"
         )
 
     return demo

@@ -9,6 +9,7 @@ def run_logit_lens(
     layer_names: Optional[List[str]] = None,
     top_k: int = 5,
     tokenizer=None,
+    position: int = -1,
     **kwargs,
 ) -> Dict:
     """
@@ -58,14 +59,27 @@ def run_logit_lens(
         # Convert to probabilities
         probs = F.softmax(logits, dim=-1)
 
-        # Get top-k predictions for the last token position
-        top_probs, top_indices = torch.topk(probs[:, -1, :], k=top_k, dim=-1)
+        seq_len = probs.shape[1]
+        pos = position if position >= 0 else seq_len + position
+        pos = max(0, min(pos, seq_len - 1))
+        # Top-k at selected position
+        top_probs, top_indices = torch.topk(probs[:, pos, :], k=top_k, dim=-1)
+
+        p_pos = probs[:, pos, :]
+        ent = -(p_pos * torch.log(p_pos + 1e-12)).sum(dim=-1)
+        top1p = p_pos.max(dim=-1).values
+        top2p = torch.topk(p_pos, k=2, dim=-1).values[:, 1]
+        margin = top1p - top2p
 
         results[name] = {
             "logits": logits,
             "probs": probs,
             "top_k_indices": top_indices,
             "top_k_probs": top_probs,
+            "position_used": pos,
+            "entropy": float(ent[0].item()),
+            "top1_prob": float(top1p[0].item()),
+            "margin_top1_top2": float(margin[0].item()),
         }
 
     layers_ordered = list(results.keys())
@@ -98,6 +112,18 @@ def run_logit_lens(
     if top_tokens_per_layer is not None:
         out["top_tokens_per_layer"] = top_tokens_per_layer
         out["top_probs_per_layer"] = top_probs_per_layer
+
+    # Token identity flips vs previous layer (top-1 id changes)
+    if len(layers_ordered) >= 2:
+        flips = 0
+        prev_id = None
+        for ln in layers_ordered:
+            tid = int(results[ln]["top_k_indices"][0, 0].item())
+            if prev_id is not None and tid != prev_id:
+                flips += 1
+            prev_id = tid
+        out["top1_identity_changes"] = flips
+    out["position"] = position
     return out
 
 

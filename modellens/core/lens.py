@@ -129,6 +129,18 @@ class ModelLens:
 
         return run_embeddings_analysis(self, inputs, **kwargs)
 
+    def forward_trace(self, inputs, **kwargs):
+        """Structured forward-pass trace (per-module shapes + activation summaries)."""
+        from modellens.analysis.forward_trace import run_forward_trace
+
+        return run_forward_trace(self, inputs, **kwargs)
+
+    def backward_trace(self, inputs, **kwargs):
+        """Gradient norms after a surrogate backward pass (see ``run_backward_trace``)."""
+        from modellens.analysis.backward_trace import run_backward_trace
+
+        return run_backward_trace(self, inputs, **kwargs)
+
     # ---- Cleanup ----
     def clear(self) -> None:
         """Remove all hooks and clear cached activations."""

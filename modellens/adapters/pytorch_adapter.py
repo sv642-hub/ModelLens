@@ -53,14 +53,27 @@ class PyTorchAdapter(BaseAdapter):
         return None
 
     def forward(self, model: torch.nn.Module, inputs, **kwargs) -> torch.Tensor:
-        """Run a standard forward pass."""
+        """Run a standard forward pass (unwrap ``input_ids`` / ``input`` dicts for nn.Module models)."""
+        if isinstance(inputs, dict):
+            if "input_ids" in inputs:
+                return model(inputs["input_ids"], **kwargs)
+            if "input" in inputs:
+                return model(inputs["input"], **kwargs)
         return model(inputs, **kwargs)
 
     def tokenize(self, inputs, **kwargs) -> Dict:
         """
-        No-op for vanilla PyTorch — assumes inputs are already tensors.
-        Returns them wrapped in a dict for consistency with the interface.
+        Wrap tensors or list-like token id sequences in ``input_ids`` for analysis code.
+        Raw strings are not supported — use app-level helpers that map text to ids.
         """
         if isinstance(inputs, torch.Tensor):
-            return {"input": inputs}
-        return {"input": torch.tensor(inputs)}
+            return {"input_ids": inputs}
+        if isinstance(inputs, str):
+            raise TypeError(
+                "PyTorchAdapter.tokenize does not accept raw strings; "
+                "build input_ids tensors in application code."
+            )
+        t = torch.as_tensor(inputs)
+        if t.dim() == 1:
+            t = t.unsqueeze(0)
+        return {"input_ids": t}
