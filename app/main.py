@@ -71,16 +71,16 @@ def create_app():
 
         lens_state = gr.State(None)
         model_name_state = gr.State("")
-        backend_state = gr.State("hf")
+        backend_state = gr.State("toy")
 
         gr.Markdown(
-            "**Model source** — HF models need a first-time download; Toy is instant and offline "
-            "(random weights, demo-only)."
+            "**Model source** — Hugging Face needs the **`transformers`** package (`pip install transformers` "
+            "or `pip install -e \".[app]\"`). ToyTransformer is **offline** and only needs **torch**."
         )
         with gr.Row():
             backend_in = gr.Radio(
                 choices=[("Hugging Face causal LM", "hf"), ("ToyTransformer (local PyTorch)", "toy")],
-                value="hf",
+                value="toy",
                 label="Backend",
             )
             model_in = gr.Dropdown(
@@ -95,7 +95,7 @@ def create_app():
         toy_hint = gr.Markdown(visible=False)
 
         def _sync_backend(b):
-            return gr.Markdown.update(visible=(b == "toy"), value=f"_{TOY_PROMPT_HINT}_")
+            return gr.update(visible=(b == "toy"), value=f"_{TOY_PROMPT_HINT}_")
 
         backend_in.change(_sync_backend, [backend_in], [toy_hint])
 
@@ -107,15 +107,26 @@ def create_app():
                     "Loaded **ToyTransformer** (`examples/toy_transformer.py`) — random weights; no tokenizer.",
                     "ToyTransformer (pytorch)",
                     "toy",
-                    gr.Markdown.update(visible=True, value=f"_{TOY_PROMPT_HINT}_"),
+                    gr.update(visible=True, value=f"_{TOY_PROMPT_HINT}_"),
                 )
-            lens, _ = load_huggingface_lens(hf_name)
+            try:
+                lens, _ = load_huggingface_lens(hf_name)
+            except ImportError as e:
+                if "transformers" in str(e).lower() or getattr(e, "name", None) == "transformers":
+                    msg = (
+                        "Missing **transformers**. Install with: `pip install transformers` "
+                        "or from the repo: `pip install -e \".[app]\"`. "
+                        "Or switch backend to **ToyTransformer (local PyTorch)** — no download, works offline."
+                    )
+                else:
+                    msg = f"Hugging Face load failed ({type(e).__name__}: {e}). Try ToyTransformer or fix your environment."
+                raise gr.Error(msg) from e
             return (
                 lens,
                 f"Loaded **`{hf_name}`** — tokenizer attached; eager attention for weights.",
                 hf_name,
                 "hf",
-                gr.Markdown.update(visible=False),
+                gr.update(visible=False),
             )
 
         load_btn.click(
@@ -169,15 +180,44 @@ def create_app():
                 max_mod = gr.Slider(
                     20, 200, value=120, step=10, label="Max modules to hook"
                 )
+                fw_mode = gr.Radio(
+                    choices=[
+                        ("Full module order", "full"),
+                        ("Top-N by norm_mean", "top_n"),
+                        ("Family aggregate", "family"),
+                    ],
+                    value="top_n",
+                    label="Display mode",
+                )
+                fw_top_n = gr.Slider(
+                    minimum=10,
+                    maximum=120,
+                    value=60,
+                    step=10,
+                    label="Top-N (used when Display mode = Top-N)",
+                )
                 run_fw = gr.Button("Run forward trace", variant="primary")
                 fig_fw_norm = gr.Plot(label="Mean ‖·‖ (output summary)")
                 fig_fw_last = gr.Plot(label="Last-token hidden L2 norm")
+                fig_fw_dist = gr.Plot(label="Activation norm distribution by family")
 
-                def _fw(p, mm, lens):
+                def _fw(p, mm, mode, top_n, lens):
                     lens = _need_lens(lens)
-                    return _tab_err("Forward trace", run_forward_figs, lens, p, mm)
+                    return _tab_err(
+                        "Forward trace",
+                        run_forward_figs,
+                        lens,
+                        p,
+                        mm,
+                        mode,
+                        top_n,
+                    )
 
-                run_fw.click(_fw, [prompt_fw, max_mod, lens_state], [fig_fw_norm, fig_fw_last])
+                run_fw.click(
+                    _fw,
+                    [prompt_fw, max_mod, fw_mode, fw_top_n, lens_state],
+                    [fig_fw_norm, fig_fw_last, fig_fw_dist],
+                )
 
             # ---- 3 Attention ----
             with gr.Tab("3 · Attention"):
@@ -190,12 +230,17 @@ def create_app():
                 run_a = gr.Button("Plot attention", variant="primary")
                 attn_metrics = gr.HTML()
                 fig_a = gr.Plot()
+                fig_a_entropy = gr.Plot(label="Attention entropy by head (selected layer)")
 
                 def _attn(p, li, hi, lens):
                     lens = _need_lens(lens)
                     return _tab_err("Attention", run_attn_fig, lens, p, int(li), int(hi))
 
-                run_a.click(_attn, [prompt_a, layer_i, head_i, lens_state], [fig_a, attn_metrics])
+                run_a.click(
+                    _attn,
+                    [prompt_a, layer_i, head_i, lens_state],
+                    [fig_a, attn_metrics, fig_a_entropy],
+                )
 
             # ---- 4 Logit lens ----
             with gr.Tab("4 · Logit / representation"):
@@ -204,16 +249,32 @@ def create_app():
                     "Flat / low confidence is common on untrained models._"
                 )
                 prompt_l = gr.Textbox(label="Prompt / text", value=DEFAULT_PROMPT, lines=2)
+                temp = gr.Slider(
+                    minimum=0.2,
+                    maximum=2.5,
+                    value=1.0,
+                    step=0.1,
+                    label="Output temperature (visualization only)",
+                    info=(
+                        "Rescales logits before softmax for these plots only. "
+                        "Lower = sharper; higher = flatter."
+                    ),
+                )
                 run_l = gr.Button("Run logit lens", variant="primary")
                 fig_le = gr.Plot(label="Top-1 token trajectory")
                 fig_lh = gr.Plot(label="Top-k heatmap across layers")
                 fig_lc = gr.Plot(label="Entropy · top-1 · margin")
 
-                def _logit(p, lens):
+                def _logit(p, t, lens):
                     lens = _need_lens(lens)
-                    return _tab_err("Logit lens", run_logit_figs, lens, p)
+                    return _tab_err("Logit lens", run_logit_figs, lens, p, float(t))
 
-                run_l.click(_logit, [prompt_l, lens_state], [fig_le, fig_lh, fig_lc])
+                logit_summary = gr.HTML()
+                run_l.click(
+                    _logit,
+                    [prompt_l, temp, lens_state],
+                    [logit_summary, fig_le, fig_lh, fig_lc],
+                )
 
             # ---- 5 Patching ----
             with gr.Tab("5 · Causal patching"):
@@ -228,18 +289,41 @@ def create_app():
                     value=DEFAULT_CORRUPTED,
                     lines=2,
                 )
+                patch_mode = gr.Radio(
+                    choices=[
+                        ("Full modules", "full"),
+                        ("Top-N by absolute effect", "top_n"),
+                        ("Family aggregate", "family"),
+                    ],
+                    value="top_n",
+                    label="Display mode",
+                )
+                patch_top_n = gr.Slider(
+                    minimum=5,
+                    maximum=200,
+                    value=60,
+                    step=5,
+                    label="Top-N (used when Display mode = Top-N)",
+                )
                 run_p = gr.Button("Run patching", variant="primary")
-                patch_html = gr.HTML()
+                patch_summary = gr.HTML()
                 with gr.Row():
                     fig_p = gr.Plot(label="Normalized causal effect")
                     fig_pr = gr.Plot(label="Recovery fraction")
+                fig_family = gr.Plot(label="Family summary (effect vs recovery)")
 
-                def _patch_out(c, r, lens):
+                def _patch_out(c, r, mode, top_n, lens):
                     lens = _need_lens(lens)
-                    fe, fr, html = _tab_err("Patching", run_patch_fig, lens, c, r)
-                    return html, fe, fr
+                    html, fe, fr, fam = _tab_err(
+                        "Patching", run_patch_fig, lens, c, r, mode, top_n
+                    )
+                    return html, fe, fr, fam
 
-                run_p.click(_patch_out, [clean, corrupted, lens_state], [patch_html, fig_p, fig_pr])
+                run_p.click(
+                    _patch_out,
+                    [clean, corrupted, patch_mode, patch_top_n, lens_state],
+                    [patch_summary, fig_p, fig_pr, fig_family],
+                )
 
             # ---- 6 Residual & embeddings ----
             with gr.Tab("6 · Residual & embeddings"):
@@ -272,14 +356,43 @@ def create_app():
                     value="logits_mean",
                     label="Loss",
                 )
+                grad_mode = gr.Radio(
+                    choices=[
+                        ("Full modules", "full"),
+                        ("Top-N prefixes", "top_n"),
+                        ("Family aggregate", "family"),
+                    ],
+                    value="top_n",
+                    label="Gradient display mode",
+                )
+                grad_top_n = gr.Slider(
+                    minimum=10,
+                    maximum=200,
+                    value=80,
+                    step=10,
+                    label="Top-N (used when Gradient display mode = Top-N)",
+                )
                 run_g = gr.Button("Run backward trace", variant="primary")
                 fig_g = gr.Plot()
+                fig_g_dist = gr.Plot(label="Gradient-norm distribution by family")
 
-                def _grad(p, mode, lens):
+                def _grad(p, loss, g_mode, top_n, lens):
                     lens = _need_lens(lens)
-                    return _tab_err("Gradient flow", run_backward_fig, lens, p, mode)
+                    return _tab_err(
+                        "Gradient flow",
+                        run_backward_fig,
+                        lens,
+                        p,
+                        loss,
+                        g_mode,
+                        top_n,
+                    )
 
-                run_g.click(_grad, [prompt_g, loss_mode, lens_state], [fig_g])
+                run_g.click(
+                    _grad,
+                    [prompt_g, loss_mode, grad_mode, grad_top_n, lens_state],
+                    [fig_g, fig_g_dist],
+                )
 
             # ---- 8 Training snapshots ----
             with gr.Tab("8 · Training snapshots"):

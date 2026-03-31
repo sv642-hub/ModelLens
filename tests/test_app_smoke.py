@@ -69,12 +69,12 @@ def test_toy_tokenize_and_overview(toy_lens):
 
 def test_toy_forward_attn_logit_residual_embed(toy_lens):
     p = "The cat sat."
-    a, h = run_attn_fig(toy_lens, p, 0, 0)
-    assert a is not None
-    e1, e2, e3 = run_logit_figs(toy_lens, p)
+    a, h, ent = run_attn_fig(toy_lens, p, 0, 0)
+    assert a is not None and ent is not None
+    e1, e2, e3, e4 = run_logit_figs(toy_lens, p, temperature=1.0)
     assert e1 is not None
-    f1, f2 = run_forward_figs(toy_lens, p, 80)
-    assert f1 is not None
+    f1, f2, f3 = run_forward_figs(toy_lens, p, 80, display_mode="top_n", top_n=80)
+    assert f1 is not None and f3 is not None
     r = run_residual_fig(toy_lens, p)
     assert r is not None
     em = run_embed_fig(toy_lens, p)
@@ -82,13 +82,21 @@ def test_toy_forward_attn_logit_residual_embed(toy_lens):
 
 
 def test_toy_backward(toy_lens):
-    g = run_backward_fig(toy_lens, "ab", "logits_mean")
-    assert g is not None
+    g_main, g_dist = run_backward_fig(
+        toy_lens, "ab", "logits_mean", display_mode="top_n", top_n=80
+    )
+    assert g_main is not None and g_dist is not None
 
 
 def test_toy_patching(toy_lens):
-    fe, fr, html = run_patch_fig(toy_lens, "aaabbb", "aaaxbb")
-    assert fe is not None and fr is not None
+    html, fe, fr, fam = run_patch_fig(
+        toy_lens,
+        "aaabbb",
+        "aaaxbb",
+        display_mode="top_n",
+        top_n=80,
+    )
+    assert fe is not None and fr is not None and fam is not None
     assert "Clean" in html or "clean" in html.lower()
 
 

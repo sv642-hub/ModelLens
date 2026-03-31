@@ -22,9 +22,17 @@ from modellens.visualization.activation_patching import (
     plot_patching_importance_heatmap,
     plot_patching_recovery_fraction,
 )
-from modellens.visualization.backward_flow import plot_module_gradient_norms
+from modellens.visualization.backward_flow import (
+    plot_gradient_norm_distribution_by_family,
+    plot_gradient_norm_family_aggregate,
+    plot_gradient_norm_top_n,
+    plot_module_gradient_norms,
+)
 from modellens.visualization.forward_flow import (
+    plot_activation_norm_distribution_by_family,
+    plot_forward_family_aggregate,
     plot_forward_trace_norms,
+    plot_forward_trace_top_n,
     plot_last_token_hidden_norm,
 )
 from modellens.visualization.logit_evolution import plot_logit_lens_confidence_panel
@@ -37,6 +45,7 @@ from modellens.visualization.training_curves import plot_snapshot_metric
 from modellens.visualization.attention import (
     plot_attention_head_grid,
     plot_attention_heatmap,
+    plot_attention_head_entropy,
 )
 from modellens.visualization.embeddings import (
     plot_embedding_norms,
@@ -66,6 +75,7 @@ from modellens.visualization.shapes import (
     shape_trace_mermaid,
     shape_trace_to_dataframe,
 )
+from modellens.visualization.module_families import infer_module_family
 
 __all__ = [
     "showfig",
@@ -83,15 +93,22 @@ __all__ = [
     "patching_dict_to_viz",
     "plot_attention_head_grid",
     "plot_attention_heatmap",
+    "plot_attention_head_entropy",
     "plot_embedding_norms",
     "plot_embedding_similarity_heatmap",
     "plot_forward_trace_norms",
+    "plot_forward_trace_top_n",
+    "plot_forward_family_aggregate",
+    "plot_activation_norm_distribution_by_family",
     "plot_last_token_hidden_norm",
     "plot_logit_lens_confidence_panel",
     "plot_logit_lens_evolution",
     "plot_logit_lens_heatmap",
     "plot_logit_lens_top_token_bars",
     "plot_module_gradient_norms",
+    "plot_gradient_norm_top_n",
+    "plot_gradient_norm_family_aggregate",
+    "plot_gradient_norm_distribution_by_family",
     "plot_parameter_sunburst_or_bar",
     "plot_patching_importance_bar",
     "plot_patching_importance_heatmap",
@@ -101,6 +118,7 @@ __all__ = [
     "plot_shape_trace_table",
     "plot_snapshot_metric",
     "residual_dict_to_viz",
+    "infer_module_family",
     "shape_trace_mermaid",
     "shape_trace_to_dataframe",
     "tensor_to_dataframe",

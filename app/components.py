@@ -24,13 +24,17 @@ from modellens.visualization.activation_patching import (
     format_patching_summary_html,
     plot_patching_importance_bar,
     plot_patching_recovery_fraction,
+    plot_patching_family_effect_recovery_heatmap,
 )
 from modellens.visualization.attention import plot_attention_heatmap
 from modellens.visualization.backward_flow import plot_module_gradient_norms
 from modellens.visualization.common import default_plotly_layout
 from modellens.visualization.embeddings import plot_embedding_similarity_heatmap
 from modellens.visualization.forward_flow import (
+    plot_activation_norm_distribution_by_family,
+    plot_forward_family_aggregate,
     plot_forward_trace_norms,
+    plot_forward_trace_top_n,
     plot_last_token_hidden_norm,
 )
 from modellens.visualization.logit_evolution import plot_logit_lens_confidence_panel
@@ -43,6 +47,12 @@ from modellens.visualization.shapes import (
     shape_trace_mermaid,
 )
 from modellens.visualization.training_curves import plot_snapshot_metric
+from modellens.visualization.backward_flow import (
+    plot_gradient_norm_distribution_by_family,
+    plot_gradient_norm_family_aggregate,
+    plot_gradient_norm_top_n,
+)
+from modellens.visualization.attention import plot_attention_head_entropy
 
 try:
     import plotly.graph_objects as go
@@ -54,6 +64,83 @@ def _empty_fig(title: str) -> Any:
     fig = go.Figure()
     fig.update_layout(**default_plotly_layout(title=title, width=900, height=260))
     return fig
+
+
+def _apply_temperature_to_logit_result(
+    logit_result: Dict[str, Any], temperature: float
+) -> Dict[str, Any]:
+    """
+    Rescale logits by ``1/temperature`` for visualization only.
+
+    This recomputes probabilities and confidence metrics but does **not** change
+    underlying model activations or logits stored on disk.
+    """
+    if temperature is None or abs(float(temperature) - 1.0) < 1e-6:
+        return logit_result
+
+    import copy
+
+    out = copy.deepcopy(logit_result)
+    out.pop("top_tokens_per_layer", None)
+    out.pop("top_probs_per_layer", None)
+    layers = out.get("layers_ordered") or list(out.get("layer_results", {}).keys())
+    if not layers:
+        return out
+
+    all_lr = out["layer_results"]
+    pos_global = int(out.get("position", -1) or -1)
+
+    for name in layers:
+        lr = all_lr.get(name) or {}
+        logits = lr.get("logits")
+        if logits is None:
+            continue
+        # shape: (batch, seq, vocab)
+        logits_t = logits.detach().float() / float(temperature)
+        probs = torch.softmax(logits_t, dim=-1)
+        seq_len = probs.shape[1]
+        pos = lr.get("position_used", pos_global)
+        if pos is None:
+            pos = -1
+        if pos < 0:
+            pos = seq_len + pos
+        pos = max(0, min(seq_len - 1, pos))
+
+        p_pos = probs[:, pos, :]
+        top_probs, top_indices = torch.topk(p_pos, k=int(out.get("top_k", 5)), dim=-1)
+        ent = -(p_pos * torch.log(p_pos + 1e-12)).sum(dim=-1)
+        top1p = p_pos.max(dim=-1).values
+        top2p = torch.topk(p_pos, k=2, dim=-1).values[:, 1]
+        margin = top1p - top2p
+
+        lr["probs"] = probs
+        lr["top_k_indices"] = top_indices
+        lr["top_k_probs"] = top_probs
+        lr["entropy"] = float(ent[0].item())
+        lr["top1_prob"] = float(top1p[0].item())
+        lr["margin_top1_top2"] = float(margin[0].item())
+        lr["position_used"] = pos
+
+    # Update "top-1 identity changes" under the rescaled distribution.
+    # (Useful for temperature-aware summaries.)
+    if len(layers) >= 2:
+        flips = 0
+        prev_tid = None
+        for ln in layers:
+            lr = all_lr.get(ln) or {}
+            idx = lr.get("top_k_indices")
+            if idx is None:
+                continue
+            try:
+                tid = int(idx[0, 0].item())
+            except Exception:
+                continue
+            if prev_tid is not None and tid != prev_tid:
+                flips += 1
+            prev_tid = tid
+        out["top1_identity_changes"] = flips
+
+    return out
 
 
 def load_huggingface_lens(model_name: str) -> Tuple[ModelLens, Any]:
@@ -148,7 +235,7 @@ def build_overview(
 
 def run_attn_fig(
     lens: ModelLens, prompt: str, layer_index: int, head_index: int
-) -> Tuple[Any, str]:
+) -> Tuple[Any, str, Any]:
     tokens = tokenize(lens, prompt)
     ar = run_attention_analysis(lens, tokens)
     n_layers = len(ar.get("layers_ordered") or [])
@@ -161,6 +248,12 @@ def run_attn_fig(
     fig = plot_attention_heatmap(
         ar, layer_index=layer_index, head_index=head_index
     )
+    try:
+        fig_entropy = plot_attention_head_entropy(
+            ar, layer_index=layer_index, max_heads=12
+        )
+    except Exception:
+        fig_entropy = _empty_fig("Attention entropy unavailable for this run.")
     metrics = compute_attention_pattern_metrics(ar)
     pl = metrics.get("per_layer") or {}
     ordered = ar.get("layers_ordered") or list(pl.keys())
@@ -183,22 +276,63 @@ def run_attn_fig(
         html += "</div>"
     else:
         html = "<i>No per-layer metrics.</i>"
-    return fig, html
+    return fig, html, fig_entropy
 
 
-def run_logit_figs(lens: ModelLens, prompt: str) -> Tuple[Any, Any, Any]:
+def run_logit_figs(
+    lens: ModelLens, prompt: str, temperature: float = 1.0
+) -> Tuple[Any, Any, Any, Any]:
     tokens = tokenize(lens, prompt)
     tok = getattr(lens.adapter, "_tokenizer", None)
     lr = run_logit_lens(lens, tokens, tokenizer=tok, top_k=5)
+    lr = _apply_temperature_to_logit_result(lr, temperature)
     evo = plot_logit_lens_evolution(lr)
     heat = plot_logit_lens_heatmap(lr, top_ranks=5)
     conf = plot_logit_lens_confidence_panel(lr)
-    return evo, heat, conf
+
+    layer_results = lr.get("layer_results") or {}
+    ents = [float(v.get("entropy", 0.0)) for v in layer_results.values()]
+    top1_ps = [float(v.get("top1_prob", 0.0)) for v in layer_results.values()]
+    margins = [float(v.get("margin_top1_top2", 0.0)) for v in layer_results.values()]
+
+    avg_ent = sum(ents) / max(1, len(ents))
+    max_top1 = max(top1_ps) if top1_ps else 0.0
+    avg_margin = sum(margins) / max(1, len(margins))
+
+    layers_ordered = lr.get("layers_ordered") or list(layer_results.keys())
+    final_layer = layers_ordered[-1] if layers_ordered else None
+    final_top1 = float(layer_results.get(final_layer, {}).get("top1_prob", 0.0)) if final_layer else 0.0
+    flips = lr.get("top1_identity_changes", None)
+
+    summary_html = (
+        "<div style='font-family:system-ui;line-height:1.45'>"
+        "<b>Output temperature:</b> "
+        f"{float(temperature):.2f}"
+        "<br/>"
+        f"<b>Avg entropy:</b> {avg_ent:.3f}"
+        "<br/>"
+        f"<b>Max top-1 prob:</b> {max_top1:.4f}"
+        "<br/>"
+        f"<b>Avg margin (top1-top2):</b> {avg_margin:.3f}"
+        "<br/>"
+        f"<b>Final-layer top-1 prob:</b> {final_top1:.4f}"
+        "<br/>"
+        f"<b>Top-1 identity changes:</b> {flips if flips is not None else '—'}"
+        "<br/>"
+        "<i>Note:</i> temperature affects <b>display probabilities</b> only."
+        "</div>"
+    )
+
+    return summary_html, evo, heat, conf
 
 
 def run_forward_figs(
-    lens: ModelLens, prompt: str, max_modules: int
-) -> Tuple[Any, Any]:
+    lens: ModelLens,
+    prompt: str,
+    max_modules: int,
+    display_mode: str = "full",
+    top_n: int = 60,
+) -> Tuple[Any, Any, Any]:
     tokens = tokenize(lens, prompt)
     tr = run_forward_trace(
         lens, tokens, max_modules=int(max_modules)
@@ -206,19 +340,36 @@ def run_forward_figs(
     if not tr.get("records"):
         ef = _empty_fig("No forward trace records — try increasing max modules or check hooks.")
         return ef, ef
-    fig_norm = plot_forward_trace_norms(tr, summary_field="norm_mean")
+    summary_field = "norm_mean"
+    if display_mode == "top_n":
+        fig_norm = plot_forward_trace_top_n(
+            tr, summary_field=summary_field, top_n=top_n
+        )
+    elif display_mode == "family":
+        fig_norm = plot_forward_family_aggregate(
+            tr, summary_field=summary_field, agg="mean"
+        )
+    else:
+        fig_norm = plot_forward_trace_norms(tr, summary_field=summary_field)
     try:
         fig_last = plot_last_token_hidden_norm(tr)
     except ValueError:
         fig_last = _empty_fig(
             "No last-token hidden norms — sequence or hook coverage may be insufficient."
         )
-    return fig_norm, fig_last
+    fig_dist = plot_activation_norm_distribution_by_family(
+        tr, summary_field=summary_field
+    )
+    return fig_norm, fig_last, fig_dist
 
 
 def run_backward_fig(
-    lens: ModelLens, prompt: str, loss_mode: str
-) -> Any:
+    lens: ModelLens,
+    prompt: str,
+    loss_mode: str,
+    display_mode: str = "full",
+    top_n: int = 60,
+) -> Tuple[Any, Any]:
     tokens = tokenize(lens, prompt)
     kwargs: Dict[str, Any] = {"loss_mode": loss_mode}
     if loss_mode == "last_token_ce":
@@ -231,23 +382,45 @@ def run_backward_fig(
         if loss_mode == "last_token_ce"
         else "Gradient norm by module (mean logits surrogate)"
     )
-    return plot_module_gradient_norms(br, title=title)
+    if display_mode == "top_n":
+        fig_main = plot_gradient_norm_top_n(br, top_n=top_n, title=title)
+    elif display_mode == "family":
+        fig_main = plot_gradient_norm_family_aggregate(br, agg="mean", title=title)
+    else:
+        fig_main = plot_module_gradient_norms(br, title=title)
+
+    fig_dist = plot_gradient_norm_distribution_by_family(br)
+    return fig_main, fig_dist
 
 
 def run_patch_fig(
-    lens: ModelLens, clean: str, corrupted: str
-) -> Tuple[Any, Any, str]:
+    lens: ModelLens,
+    clean: str,
+    corrupted: str,
+    display_mode: str = "full",
+    top_n: int = 30,
+) -> Tuple[Any, Any, Any, Any]:
     clean_t = tokenize(lens, clean)
     cor_t = tokenize(lens, corrupted)
     clean_t, cor_t = _align_patch_inputs(clean_t, cor_t)
     pr = run_activation_patching(lens, clean_t, cor_t, layer_names=None)
-    fig_effect = plot_patching_importance_bar(pr, use_normalized=True)
+    fig_effect = plot_patching_importance_bar(
+        pr,
+        use_normalized=True,
+        display_mode=display_mode,
+        top_n=top_n,
+    )
     try:
-        fig_rec = plot_patching_recovery_fraction(pr)
+        fig_rec = plot_patching_recovery_fraction(
+            pr,
+            display_mode=display_mode,
+            top_n=top_n,
+        )
     except Exception:
         fig_rec = _empty_fig("Recovery plot unavailable for this run.")
+    fig_family = plot_patching_family_effect_recovery_heatmap(pr, use_normalized=True)
     html = format_patching_summary_html(pr)
-    return fig_effect, fig_rec, html
+    return html, fig_effect, fig_rec, fig_family
 
 
 def run_residual_fig(lens: ModelLens, prompt: str) -> Any:
