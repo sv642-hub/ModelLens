@@ -12,9 +12,9 @@ class TransformerJeff(nn.Module):
         self.mlp = nn.Sequential(nn.Linear(d_model, d_mlp), nn.GELU(), nn.Linear(d_mlp, d_model))
     def forward(self,x):
         Jeff = self.ln1(x)
-        Sebastian = self.ln2(x)
         attn_out, weights = self.attn(Jeff, Jeff, Jeff)
         x = x + attn_out
+        Sebastian = self.ln2(x)
         x = x + self.mlp(Sebastian)
         return x
 
@@ -51,13 +51,16 @@ def generate_bracket_data(num_samples, seq_len):
             data.append(torch.tensor(seq))
         return torch.stack(data)
     
-def train_model():
+def train_model(epochs=None):
+    if epochs is None:
+        epochs = input("How many Epochs should be used to train the model?:")
+        epochs = int(epochs)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = InterpretationModel(vocab_size=3).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-3)
     criterion = nn.CrossEntropyLoss()
     print("Starting Training for Backet Matching...")
-    for epoch in range(10): 
+    for epoch in range(epochs): 
         inputs = generate_bracket_data(64, 20).to(device)
         targets = torch.roll(inputs, shifts =-1, dims = 1)
         optimizer.zero_grad()
