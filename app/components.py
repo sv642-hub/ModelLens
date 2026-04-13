@@ -13,7 +13,13 @@ from modellens.analysis.activation_patching import run_activation_patching
 from modellens.analysis.attention import (
     compute_attention_pattern_metrics,
     run_attention_analysis,
+    run_comparative_attention,
 )
+from modellens.analysis.comparison import (
+    compare_forward_outputs,
+    run_comparative_logit_lens,
+)
+from modellens.analysis.divergence import first_divergence_module, run_activation_divergence
 from modellens.analysis.backward_trace import run_backward_trace
 from modellens.analysis.embeddings import run_embeddings_analysis
 from modellens.analysis.forward_trace import run_forward_trace
@@ -25,6 +31,14 @@ from modellens.visualization.activation_patching import (
     plot_patching_importance_bar,
     plot_patching_recovery_fraction,
     plot_patching_family_effect_recovery_heatmap,
+)
+from modellens.visualization.comparison_story import (
+    format_comparison_summary_html,
+    plot_attention_comparison_heatmaps,
+    plot_attention_entropy_delta_heads,
+    plot_divergence_by_module,
+    plot_family_divergence,
+    plot_logit_lens_comparison_trajectories,
 )
 from modellens.visualization.attention import plot_attention_heatmap
 from modellens.visualization.backward_flow import plot_module_gradient_norms
@@ -339,7 +353,7 @@ def run_forward_figs(
     )
     if not tr.get("records"):
         ef = _empty_fig("No forward trace records — try increasing max modules or check hooks.")
-        return ef, ef
+        return ef, ef, ef
     summary_field = "norm_mean"
     if display_mode == "top_n":
         fig_norm = plot_forward_trace_top_n(
@@ -452,6 +466,170 @@ def validate_snapshots_json(data: Any) -> Optional[str]:
     return None
 
 
+def run_corruption_story(
+    lens: ModelLens,
+    clean: str,
+    corrupted: str,
+    temperature: float,
+    layer_index: int,
+    head_index: int,
+    max_div_modules: int,
+    patch_mode: str,
+    patch_top_n: int,
+    target_token_id: Optional[float] = None,
+) -> Tuple[Any, Any, Any, Any, Any, Any, Any, Any, Any]:
+    """
+    Clean vs corrupted technical story: forward comparison, divergence, logit trajectories,
+    attention shift, and causal patching (same inputs as patching tab).
+    """
+    clean_t = tokenize(lens, clean)
+    cor_t = tokenize(lens, corrupted)
+    clean_t, cor_t = _align_patch_inputs(clean_t, cor_t)
+
+    tok = getattr(lens.adapter, "_tokenizer", None)
+    tid_opt: Optional[int] = None
+    if target_token_id is not None:
+        try:
+            v = int(float(target_token_id))
+            if v >= 0:
+                tid_opt = v
+        except (TypeError, ValueError):
+            tid_opt = None
+
+    try:
+        fwd = compare_forward_outputs(
+            lens,
+            clean_t,
+            cor_t,
+            temperature=float(temperature),
+            target_token_id=tid_opt,
+            align_input_ids=False,
+        )
+        summ = fwd["summary"]
+    except Exception as e:
+        summ = {
+            "prediction_changed": False,
+            "clean_top1_token_id": "—",
+            "corrupted_top1_token_id": "—",
+            "clean_top1_prob": 0.0,
+            "corrupted_top1_prob": 0.0,
+            "entropy_delta": 0.0,
+            "margin_delta": 0.0,
+            "_error": str(e),
+        }
+
+    comp_log: Optional[Dict[str, Any]] = None
+    try:
+        cl_bundle = run_comparative_logit_lens(
+            lens,
+            clean_t,
+            cor_t,
+            tokenizer=tok,
+            top_k=5,
+            position=-1,
+            temperature=float(temperature),
+            align_input_ids=False,
+        )
+        comp_log = cl_bundle.get("comparative")
+        fig_logit = plot_logit_lens_comparison_trajectories(
+            comp_log,
+            title="Logit lens — clean vs corrupted (aligned length)",
+        )
+    except Exception:
+        fig_logit = _empty_fig("Comparative logit lens failed for this model/run.")
+        comp_log = None
+
+    try:
+        div = run_activation_divergence(
+            lens,
+            clean_t,
+            cor_t,
+            max_modules=int(max_div_modules),
+            align_input_dicts_fn=None,
+        )
+        hint = first_divergence_module(div.get("records") or [], cosine_threshold=0.02)
+        fig_div = plot_divergence_by_module(
+            div, metric="mean_cosine_distance", top_n=min(50, int(max_div_modules))
+        )
+        fig_div_fam = plot_family_divergence(div, metric="mean_cosine_distance")
+    except Exception:
+        fig_div = _empty_fig("Activation divergence failed (try fewer modules or another backend).")
+        fig_div_fam = _empty_fig("Family divergence unavailable.")
+        hint = None
+
+    if isinstance(summ, dict) and summ.get("_error"):
+        story_top = (
+            f"<p style='color:#f87171'>Forward comparison error: {summ['_error']}</p>"
+            + format_comparison_summary_html(
+                {k: v for k, v in summ.items() if k != "_error"},
+                comp_log,
+                hint,
+            )
+        )
+    else:
+        story_top = format_comparison_summary_html(summ, comp_log, hint)
+
+    try:
+        ca = run_comparative_attention(
+            lens,
+            clean_t,
+            cor_t,
+            layer_index=int(layer_index),
+            head_index=int(head_index),
+        )
+        fig_attn = plot_attention_comparison_heatmaps(
+            ca, title=f"Attention (layer {layer_index}, head {head_index})"
+        )
+        fig_attn_ent = plot_attention_entropy_delta_heads(ca)
+    except Exception:
+        fig_attn = _empty_fig("Attention comparison unavailable (e.g. missing attention weights).")
+        fig_attn_ent = _empty_fig("Entropy shift unavailable.")
+
+    try:
+        pr = run_activation_patching(lens, clean_t, cor_t, layer_names=None)
+        patch_html = format_patching_summary_html(pr)
+        fig_pe = plot_patching_importance_bar(
+            pr,
+            use_normalized=True,
+            display_mode=patch_mode,
+            top_n=int(patch_top_n),
+        )
+        try:
+            fig_pr = plot_patching_recovery_fraction(
+                pr,
+                display_mode=patch_mode,
+                top_n=int(patch_top_n),
+            )
+        except Exception:
+            fig_pr = _empty_fig("Recovery plot unavailable.")
+        fig_pf = plot_patching_family_effect_recovery_heatmap(pr, use_normalized=True)
+    except Exception as e:
+        patch_html = f"<p>Patching failed: {type(e).__name__}: {e}</p>"
+        fig_pe = _empty_fig("Patching failed.")
+        fig_pr = _empty_fig("Patching failed.")
+        fig_pf = _empty_fig("Patching failed.")
+
+    story_html = (
+        "<div style='max-width:960px'>"
+        + story_top
+        + "<hr style='border-color:#334155;margin:16px 0'/>"
+        + "<h4 style='margin:0 0 8px 0'>Causal patching (recovery)</h4>"
+        + patch_html
+        + "</div>"
+    )
+    return (
+        story_html,
+        fig_div,
+        fig_div_fam,
+        fig_logit,
+        fig_attn,
+        fig_attn_ent,
+        fig_pe,
+        fig_pr,
+        fig_pf,
+    )
+
+
 def snapshot_metric_fig(json_str: str, metric_key: str) -> Any:
     """Plot a metric from pasted JSON (list of snapshot dicts)."""
     metric_key = (metric_key or "").strip()
@@ -499,6 +677,17 @@ def presentation_story(
         fig_patch = plot_patching_importance_bar(pr)
         fig_patch_rec = plot_patching_recovery_fraction(pr)
 
+        try:
+            fs = compare_forward_outputs(
+                lens, clean_t, cor_t, align_input_ids=False
+            )["summary"]
+            corrupt_line = (
+                f"\n\n---\n**Corruption readout:** prediction changed **{fs['prediction_changed']}**, "
+                f"Δentropy **{fs['entropy_delta']:+.3f}**, Δmargin **{fs['margin_delta']:+.3f}**.\n"
+            )
+        except Exception:
+            corrupt_line = ""
+
         summary = (
             "### Narrative arc\n"
             "1. **Structure** — which modules fire and tensor shapes.\n"
@@ -507,6 +696,7 @@ def presentation_story(
             "4. **Patching** — which sublayers move the metric when activations are swapped.\n\n"
             "_Random or lightly trained models often show flat confidence — that is expected._\n\n"
             + format_patching_summary_html(pr)
+            + corrupt_line
         )
         return (
             fig_shape,

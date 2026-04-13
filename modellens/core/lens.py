@@ -141,6 +141,18 @@ class ModelLens:
 
         return run_backward_trace(self, inputs, **kwargs)
 
+    def compare_outputs(self, clean_input, corrupted_input, **kwargs):
+        """Compare final-position output distributions (clean vs corrupted)."""
+        from modellens.analysis.comparison import compare_forward_outputs
+
+        return compare_forward_outputs(self, clean_input, corrupted_input, **kwargs)
+
+    def activation_divergence(self, clean_input, corrupted_input, **kwargs):
+        """Per-module activation drift between two aligned forwards."""
+        from modellens.analysis.divergence import run_activation_divergence
+
+        return run_activation_divergence(self, clean_input, corrupted_input, **kwargs)
+
     # ---- Cleanup ----
     def clear(self) -> None:
         """Remove all hooks and clear cached activations."""

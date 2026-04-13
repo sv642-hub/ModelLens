@@ -228,7 +228,14 @@ def format_patching_summary_html(patching_result: Dict[str, Any]) -> str:
         f" <small>Family signal (avg effect): best={best_fam}, worst={worst_fam}.</small>"
         "</div>"
         "</div>"
+        + _patching_prediction_story_fragment(patching_result)
     )
+
+
+def _patching_prediction_story_fragment(patching_result: Dict[str, Any]) -> str:
+    from modellens.visualization.comparison_story import format_patching_story_html
+
+    return format_patching_story_html(patching_result)
 
 
 def plot_patching_family_effect_recovery_heatmap(

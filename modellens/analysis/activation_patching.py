@@ -56,12 +56,15 @@ def run_activation_patching(
     with torch.no_grad():
         clean_output = _forward(model, clean_input, **kwargs)
     clean_metric = metric_fn(clean_output)
+    clean_top1 = _last_position_top1_id(clean_output)
 
     # Step 2: Capture corrupted activations
     corrupted_activations, corrupted_output = _capture_activations(
         model, available, corrupted_input, layer_names, **kwargs
     )
     corrupted_metric = metric_fn(corrupted_output)
+    corrupted_top1 = _last_position_top1_id(corrupted_output)
+    prediction_changed = clean_top1 != corrupted_top1
 
     # Step 3: Patch one sublayer at a time
     patch_effects = {}
@@ -75,6 +78,7 @@ def run_activation_patching(
             **kwargs,
         )
         patched_metric = metric_fn(patched_output)
+        patched_top1 = _last_position_top1_id(patched_output)
         effect = patched_metric - clean_metric
         total_effect = corrupted_metric - clean_metric
 
@@ -82,6 +86,8 @@ def run_activation_patching(
             "patched_metric": patched_metric,
             "effect": effect,
             "normalized_effect": effect / (total_effect + 1e-10),
+            "patched_top1_token_id": patched_top1,
+            "prediction_restored": patched_top1 == clean_top1,
         }
 
     total_gap = clean_metric - corrupted_metric
@@ -92,6 +98,16 @@ def run_activation_patching(
         denom = total_gap if abs(total_gap) > 1e-12 else 1e-10
         row["recovery_fraction_of_gap"] = recovery / denom
 
+    best_mod = None
+    best_frac = -1e18
+    best_restored = False
+    for k, row in patch_effects.items():
+        rf = float(row.get("recovery_fraction_of_gap", 0.0))
+        if rf > best_frac:
+            best_frac = rf
+            best_mod = k
+            best_restored = bool(row.get("prediction_restored", False))
+
     return {
         "clean_metric": clean_metric,
         "corrupted_metric": corrupted_metric,
@@ -99,6 +115,12 @@ def run_activation_patching(
         "total_gap_clean_minus_corrupted": total_gap,
         "patch_effects": patch_effects,
         "layers_ordered": list(layer_names),
+        "clean_top1_token_id": clean_top1,
+        "corrupted_top1_token_id": corrupted_top1,
+        "prediction_changed": prediction_changed,
+        "best_recovery_module": best_mod,
+        "best_recovery_fraction_of_gap": best_frac,
+        "best_patch_prediction_restored": best_restored,
     }
 
 
@@ -178,6 +200,15 @@ def _get_sublayers(model) -> List[str]:
         elif name.endswith(".self_attn") or name.endswith(".self_attention"):
             sublayers.append(name)
     return sublayers
+
+
+def _last_position_top1_id(output) -> int:
+    """Argmax vocabulary index at the last sequence position (batch 0)."""
+    if hasattr(output, "logits"):
+        output = output.logits
+    if not isinstance(output, torch.Tensor) or output.dim() < 3:
+        return -1
+    return int(output[0, -1, :].argmax().item())
 
 
 def _default_metric(output) -> float:

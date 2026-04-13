@@ -230,3 +230,104 @@ def compute_attention_pattern_metrics(attention_results: Dict) -> Dict:
         else:
             out[name] = {"pattern_hint": "unsupported_shape"}
     return {"per_layer": out}
+
+
+def _head_entropies(weights: torch.Tensor) -> torch.Tensor:
+    """Mean key-distribution entropy per head for weights (B, H, S, S)."""
+    w = weights[0].clamp(min=1e-12)  # (H, S, S)
+    ent = -(w * torch.log(w)).sum(dim=-1).mean(dim=-1)
+    return ent
+
+
+def run_comparative_attention(
+    lens,
+    clean_inputs,
+    corrupted_inputs,
+    layer_index: int = 0,
+    head_index: int = 0,
+    **kwargs,
+) -> Dict[str, Any]:
+    """
+    Run attention analysis on clean and corrupted inputs; return weights and delta.
+
+    Aligns sequence length to ``min(S_clean, S_corrupted)`` on the weight matrix
+    so heatmaps remain comparable when prompts differ in length.
+
+    Returns:
+        ``clean_weights``, ``corrupted_weights``, ``delta_weights`` for the selected
+        layer/head (2D numpy-ready tensors), ``token_labels``, ``entropy_delta_per_head``.
+    """
+    ar_c = run_attention_analysis(lens, clean_inputs, **kwargs)
+    ar_k = run_attention_analysis(lens, corrupted_inputs, **kwargs)
+
+    loc = ar_c.get("layers_ordered") or list((ar_c.get("attention_maps") or {}).keys())
+    lok = ar_k.get("layers_ordered") or list((ar_k.get("attention_maps") or {}).keys())
+    if not loc or not lok:
+        return {
+            "error": "missing_attention_maps",
+            "clean_weights": None,
+            "corrupted_weights": None,
+            "delta_weights": None,
+        }
+
+    li = max(0, min(layer_index, len(loc) - 1))
+    lk = max(0, min(layer_index, len(lok) - 1))
+    name_c = loc[li]
+    name_k = lok[lk]
+    wc_full = ar_c["attention_maps"][name_c]["weights"]
+    wk_full = ar_k["attention_maps"][name_k]["weights"]
+    hi_used = 0
+    if wc_full.dim() == 3 and wk_full.dim() == 3:
+        # Averaged weights (e.g. PyTorch MultiheadAttention default): (B, L, L)
+        sc = int(wc_full.shape[-1])
+        sk = int(wk_full.shape[-1])
+        sm = min(sc, sk)
+        wc = wc_full[0, :sm, :sm].detach().float()
+        wk = wk_full[0, :sm, :sm].detach().float()
+        delta = wk - wc
+        ent_c = -(wc.clamp(min=1e-12) * torch.log(wc.clamp(min=1e-12))).sum(dim=-1).mean()
+        ent_k = -(wk.clamp(min=1e-12) * torch.log(wk.clamp(min=1e-12))).sum(dim=-1).mean()
+        ent_delta = [float(ent_k.item() - ent_c.item())]
+        hi_used = 0
+    elif wc_full.dim() == 4 and wk_full.dim() == 4:
+        nh = min(int(wc_full.shape[1]), int(wk_full.shape[1]))
+        hi = max(0, min(head_index, nh - 1))
+        hi_used = hi
+
+        sc = int(wc_full.shape[-1])
+        sk = int(wk_full.shape[-1])
+        sm = min(sc, sk)
+        wc = wc_full[0, hi, :sm, :sm].detach().float()
+        wk = wk_full[0, hi, :sm, :sm].detach().float()
+        delta = wk - wc
+
+        ent_c = _head_entropies(wc_full[:, :, :sm, :sm])
+        ent_k = _head_entropies(wk_full[:, :, :sm, :sm])
+        nhe = min(ent_c.numel(), ent_k.numel())
+        ent_delta = (ent_k[:nhe] - ent_c[:nhe]).detach().cpu().tolist()
+    else:
+        return {
+            "error": "unexpected_attention_rank",
+            "clean_weights": None,
+            "corrupted_weights": None,
+            "delta_weights": None,
+        }
+
+    labels = ar_c.get("token_labels") or []
+    if len(labels) > sm:
+        labels = labels[:sm]
+    elif len(labels) < sm:
+        labels = list(labels) + [str(i) for i in range(len(labels), sm)]
+
+    return {
+        "layer_name_clean": name_c,
+        "layer_name_corrupted": name_k,
+        "head_index": hi_used,
+        "seq_len_used": sm,
+        "clean_weights": wc,
+        "corrupted_weights": wk,
+        "delta_weights": delta,
+        "token_labels": labels,
+        "entropy_delta_per_head": ent_delta,
+        "backend": ar_c.get("backend"),
+    }

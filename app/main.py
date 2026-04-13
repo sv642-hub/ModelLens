@@ -13,9 +13,9 @@ from app.components import (
     build_overview,
     load_huggingface_lens,
     load_toy_lens,
-    presentation_story,
     run_attn_fig,
     run_backward_fig,
+    run_corruption_story,
     run_embed_fig,
     run_forward_figs,
     run_logit_figs,
@@ -28,8 +28,10 @@ from app.demo_data import (
     DEFAULT_CORRUPTED,
     DEFAULT_MODEL,
     DEFAULT_PROMPT,
+    PRESENTATION_PRESETS,
     TOY_PROMPT_HINT,
 )
+from app.presentation_demo import refresh_presentation_attention, run_presentation_demo
 
 _GRADIO_THEME = gr.themes.Soft(
     primary_hue="indigo",
@@ -45,7 +47,9 @@ footer { visibility: hidden; }
 def _need_lens(lens):
     if lens is None:
         raise gr.Error(
-            "Load a model first: pick **Hugging Face** or **ToyTransformer**, then **Load model**."
+            "No model in memory yet. Click **Load model** and wait until the status says **Loaded** "
+            "(HF checkpoints can take a minute to download — that is normal). "
+            "If you clicked another button before load finished, Gradio may run that first — try **Load model** again, then Overview."
         )
     return lens
 
@@ -75,7 +79,9 @@ def create_app():
 
         gr.Markdown(
             "**Model source** — Hugging Face needs the **`transformers`** package (`pip install transformers` "
-            "or `pip install -e \".[app]\"`). ToyTransformer is **offline** and only needs **torch**."
+            "or `pip install -e \".[app]\"`). ToyTransformer is **offline** and only needs **torch**.\n\n"
+            "**Workflow:** click **Load model** and wait for the status message below **before** running Overview or other tabs "
+            "(HF first-time download can take a while — that is normal, not a block)."
         )
         with gr.Row():
             backend_in = gr.Radio(
@@ -419,46 +425,222 @@ def create_app():
                     [fig_snap],
                 )
 
-            # ---- 9 Story ----
-            with gr.Tab("9 · Presentation story"):
+            # ---- 9 Corruption / comparison story ----
+            with gr.Tab("9 · Corruption / comparison"):
                 gr.Markdown(
-                    "**Guided walkthrough** — shapes → attention → logit lens → patching. "
-                    "If anything fails, the summary shows the error instead of a silent tab break."
+                    "**Technical story layer** — same clean/corrupted pair throughout: "
+                    "output comparison → where activations diverge → logit trajectories → "
+                    "attention shift → causal patching / recovery. "
+                    "Optional **target token id** enables a minimal correctness check when you know the label."
                 )
-                ps_clean = gr.Textbox(label="Clean prompt", value=DEFAULT_PROMPT, lines=2)
-                ps_cor = gr.Textbox(label="Corrupted prompt", value=DEFAULT_CORRUPTED, lines=2)
-                run_story = gr.Button("Run full story", variant="primary")
-                story_md = gr.Markdown()
-                s_shape = gr.Plot()
-                s_attn = gr.Plot()
-                with gr.Row():
-                    s_logit_hm = gr.Plot()
-                    s_logit_evo = gr.Plot()
-                s_logit_conf = gr.Plot()
-                with gr.Row():
-                    s_patch = gr.Plot()
-                    s_patch_rec = gr.Plot()
-
-                def _story(c, r, lens):
-                    lens = _need_lens(lens)
-                    fig_shape, fig_attn, hm, evo, conf, fig_patch, fig_patch_rec, sm = (
-                        presentation_story(lens, c, r)
-                    )
-                    return sm, fig_shape, fig_attn, hm, evo, conf, fig_patch, fig_patch_rec
-
-                run_story.click(
-                    _story,
-                    [ps_clean, ps_cor, lens_state],
-                    [
-                        story_md,
-                        s_shape,
-                        s_attn,
-                        s_logit_hm,
-                        s_logit_evo,
-                        s_logit_conf,
-                        s_patch,
-                        s_patch_rec,
+                cs_clean = gr.Textbox(label="Clean prompt", value=DEFAULT_PROMPT, lines=2)
+                cs_cor = gr.Textbox(
+                    label="Corrupted prompt",
+                    value=DEFAULT_CORRUPTED,
+                    lines=2,
+                )
+                cs_temp = gr.Slider(
+                    minimum=0.2,
+                    maximum=2.5,
+                    value=1.0,
+                    step=0.1,
+                    label="Output temperature (logit comparison only)",
+                )
+                cs_layer = gr.Slider(0, 24, value=0, step=1, label="Attention layer index")
+                cs_head = gr.Slider(0, 16, value=0, step=1, label="Attention head index")
+                cs_max_div = gr.Slider(
+                    20,
+                    200,
+                    value=100,
+                    step=10,
+                    label="Max modules for divergence capture",
+                )
+                cs_target = gr.Textbox(
+                    label="Optional target token id (blank = skip; compares argmax to this id)",
+                    placeholder="e.g. 42",
+                    lines=1,
+                )
+                cs_patch_mode = gr.Radio(
+                    choices=[
+                        ("Full modules", "full"),
+                        ("Top-N by absolute effect", "top_n"),
+                        ("Family aggregate", "family"),
                     ],
+                    value="top_n",
+                    label="Patching plot display mode",
+                )
+                cs_patch_top = gr.Slider(
+                    minimum=5,
+                    maximum=200,
+                    value=60,
+                    step=5,
+                    label="Patching Top-N",
+                )
+                run_cs = gr.Button("Run corruption story", variant="primary")
+                cs_story = gr.HTML()
+                with gr.Row():
+                    cs_fdiv = gr.Plot(label="Divergence (top modules by cosine distance)")
+                    cs_fdivf = gr.Plot(label="Divergence by family")
+                cs_flog = gr.Plot(label="Logit lens — clean vs corrupted")
+                with gr.Row():
+                    cs_fatt = gr.Plot(label="Attention clean | corrupted | delta")
+                    cs_fent = gr.Plot(label="Attention entropy shift per head")
+                with gr.Row():
+                    cs_fp = gr.Plot(label="Patching effect")
+                    cs_fpr = gr.Plot(label="Patching recovery")
+                cs_ffam = gr.Plot(label="Patching family heatmap")
+
+                def _corruption(
+                    c,
+                    r,
+                    temp,
+                    li,
+                    hi,
+                    md,
+                    pmode,
+                    ptn,
+                    tgt_txt,
+                    lens,
+                ):
+                    lens = _need_lens(lens)
+                    tgt_num = None
+                    if tgt_txt and str(tgt_txt).strip():
+                        try:
+                            tgt_num = float(str(tgt_txt).strip())
+                        except ValueError:
+                            tgt_num = None
+                    return _tab_err(
+                        "Corruption story",
+                        run_corruption_story,
+                        lens,
+                        c,
+                        r,
+                        float(temp),
+                        int(li),
+                        int(hi),
+                        int(md),
+                        pmode,
+                        int(ptn),
+                        tgt_num,
+                    )
+
+                run_cs.click(
+                    _corruption,
+                    [
+                        cs_clean,
+                        cs_cor,
+                        cs_temp,
+                        cs_layer,
+                        cs_head,
+                        cs_max_div,
+                        cs_patch_mode,
+                        cs_patch_top,
+                        cs_target,
+                        lens_state,
+                    ],
+                    [
+                        cs_story,
+                        cs_fdiv,
+                        cs_fdivf,
+                        cs_flog,
+                        cs_fatt,
+                        cs_fent,
+                        cs_fp,
+                        cs_fpr,
+                        cs_ffam,
+                    ],
+                )
+
+            # ---- 10 Presentation demo (guided) ----
+            with gr.Tab("10 · Presentation demo"):
+                gr.Markdown(
+                    "### Guided demo (story mode 2.0)\n"
+                    "A **curated** clean → corrupt → recover narrative for live talks. "
+                    "Only four charts + story cards — use **tab 9** for the full technical comparison. "
+                    "**Layer / head** sliders update attention with **Refresh attention** without re-running the whole demo."
+                )
+                preset_dd = gr.Dropdown(
+                    choices=list(PRESENTATION_PRESETS.keys()),
+                    value="HF-style: geography glitch",
+                    label="Example preset (fills prompts)",
+                )
+                pd_clean = gr.Textbox(label="Clean input", value=DEFAULT_PROMPT, lines=2)
+                pd_cor = gr.Textbox(label="Corrupted input", value=DEFAULT_CORRUPTED, lines=2)
+
+                def _apply_preset(label):
+                    pair = PRESENTATION_PRESETS.get(label, ("", ""))
+                    c, r = pair
+                    if not c and not r:
+                        return gr.update(), gr.update()
+                    return gr.update(value=c), gr.update(value=r)
+
+                preset_dd.change(_apply_preset, [preset_dd], [pd_clean, pd_cor])
+
+                with gr.Row():
+                    pd_temp = gr.Slider(
+                        0.4,
+                        2.0,
+                        value=1.0,
+                        step=0.1,
+                        label="Display temperature (logit curves only)",
+                    )
+                    pd_layer = gr.Slider(0, 24, value=0, step=1, label="Attention layer")
+                    pd_head = gr.Slider(0, 16, value=0, step=1, label="Attention head")
+
+                run_pd = gr.Button("Run presentation demo", variant="primary")
+                pd_banner = gr.HTML()
+                pd_narrative = gr.Markdown()
+                with gr.Accordion("Plot guide (what each figure is for)", open=False):
+                    gr.Markdown(
+                        "1. **Confidence story** — clean vs corrupted top-1 probability by depth; entropy delta shows spreading or sharpening.\n\n"
+                        "2. **Attention shift** — three panels: clean, corrupted, and difference (corrupted − clean).\n\n"
+                        "3. **Divergence** — where hidden activations drift between runs (mean cosine distance; heuristic).\n\n"
+                        "4. **Patching recovery** — which **families** of modules best close the gap back toward the clean metric when activations are swapped."
+                    )
+                pd_f_conf = gr.Plot(label="1 · Confidence trajectory")
+                pd_f_attn = gr.Plot(label="2 · Attention shift")
+                with gr.Row():
+                    pd_f_div = gr.Plot(label="3 · Activation divergence")
+                    pd_f_patch = gr.Plot(label="4 · Patching recovery (family view)")
+                with gr.Row():
+                    attn_refresh = gr.Button("Refresh attention (layer / head only)", variant="secondary")
+
+                def _pres_demo(c, r, temp, li, hi, lens):
+                    lens = _need_lens(lens)
+                    return _tab_err(
+                        "Presentation demo",
+                        run_presentation_demo,
+                        lens,
+                        c,
+                        r,
+                        float(temp),
+                        int(li),
+                        int(hi),
+                    )
+
+                run_pd.click(
+                    _pres_demo,
+                    [pd_clean, pd_cor, pd_temp, pd_layer, pd_head, lens_state],
+                    [pd_banner, pd_narrative, pd_f_conf, pd_f_attn, pd_f_div, pd_f_patch],
+                )
+
+                def _pres_attn_only(c, r, temp, li, hi, lens):
+                    lens = _need_lens(lens)
+                    return _tab_err(
+                        "Presentation attention refresh",
+                        refresh_presentation_attention,
+                        lens,
+                        c,
+                        r,
+                        float(temp),
+                        int(li),
+                        int(hi),
+                    )
+
+                attn_refresh.click(
+                    _pres_attn_only,
+                    [pd_clean, pd_cor, pd_temp, pd_layer, pd_head, lens_state],
+                    [pd_f_attn],
                 )
 
         gr.Markdown(

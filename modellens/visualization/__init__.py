@@ -77,6 +77,15 @@ from modellens.visualization.shapes import (
     shape_trace_to_dataframe,
 )
 from modellens.visualization.module_families import infer_module_family
+from modellens.visualization.comparison_story import (
+    format_comparison_summary_html,
+    format_patching_story_html,
+    plot_attention_comparison_heatmaps,
+    plot_attention_entropy_delta_heads,
+    plot_divergence_by_module,
+    plot_family_divergence,
+    plot_logit_lens_comparison_trajectories,
+)
 
 __all__ = [
     "showfig",
@@ -121,6 +130,13 @@ __all__ = [
     "plot_snapshot_metric",
     "residual_dict_to_viz",
     "infer_module_family",
+    "format_comparison_summary_html",
+    "format_patching_story_html",
+    "plot_attention_comparison_heatmaps",
+    "plot_attention_entropy_delta_heads",
+    "plot_divergence_by_module",
+    "plot_family_divergence",
+    "plot_logit_lens_comparison_trajectories",
     "shape_trace_mermaid",
     "shape_trace_to_dataframe",
     "tensor_to_dataframe",
