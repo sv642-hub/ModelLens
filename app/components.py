@@ -44,6 +44,7 @@ from modellens.visualization.comparison_story import (
 from modellens.visualization.attention import plot_attention_heatmap
 from modellens.visualization.backward_flow import plot_module_gradient_norms
 from modellens.visualization.common import default_plotly_layout
+from modellens.visualization.module_families import pretty_module_name
 from modellens.visualization.embeddings import plot_embedding_similarity_heatmap
 from modellens.visualization.forward_flow import (
     plot_activation_norm_distribution_by_family,
@@ -169,6 +170,9 @@ def _apply_temperature_to_logit_result(
         out["top1_identity_changes"] = flips
 
     return out
+
+
+apply_temperature_to_logit_result = _apply_temperature_to_logit_result
 
 
 def load_huggingface_lens(model_name: str) -> Tuple[ModelLens, Any]:
@@ -711,12 +715,11 @@ def presentation_story(
             corrupt_line = ""
 
         summary = (
-            "### Narrative arc\n"
-            "1. **Structure** — which modules fire and tensor shapes.\n"
-            "2. **Attention** — where probability mass sits on this prompt (inspect heatmap).\n"
-            "3. **Logit lens** — how next-token distribution sharpens or stays flat across depth.\n"
-            "4. **Patching** — which sublayers move the metric when activations are swapped.\n\n"
-            "_Random or lightly trained models often show flat confidence — that is expected._\n\n"
+            "### Guided interpretation\n"
+            "1. **Inputs and outputs**: compare clean vs corrupted output token and confidence first.\n"
+            "2. **Internal divergence**: attention and logit-lens plots show where predictions drift.\n"
+            "3. **Causal recovery**: patching highlights components that restore clean-like behavior.\n\n"
+            "_On random or lightly trained models, confidence can remain flat; that is expected._\n\n"
             + format_patching_summary_html(pr)
             + corrupt_line
         )
@@ -795,7 +798,8 @@ def run_circuit_discovery_fig(
             html_parts.append(f"<b style='color:{rc}'>{role.upper()}</b><br/>")
             for n in role_nodes:
                 html_parts.append(
-                    f"&nbsp;&nbsp;<code>{n['name']}</code> "
+                    f"&nbsp;&nbsp;<b>{pretty_module_name(n['name'])}</b> "
+                    f"<code style='opacity:0.7'>{n['name']}</code> "
                     f"({n['family']}) — effect: {n['normalized_effect']:+.3f}<br/>"
                 )
             html_parts.append("<br/>")
@@ -808,10 +812,7 @@ def run_circuit_discovery_fig(
         sorted_nodes = sorted(
             nodes, key=lambda n: abs(n["normalized_effect"]), reverse=True
         )
-        names = [
-            n["name"].split(".")[-2] + "." + n["name"].split(".")[-1]
-            for n in sorted_nodes
-        ]
+        names = [pretty_module_name(n["name"]) for n in sorted_nodes]
         effects = [n["normalized_effect"] for n in sorted_nodes]
         bar_colors = [
             {
@@ -851,8 +852,8 @@ def run_circuit_discovery_fig(
         edge_weights = []
         edge_colors = []
         for e in edges:
-            src = e["from"].split(".")[-2] + "." + e["from"].split(".")[-1]
-            dst = e["to"].split(".")[-2] + "." + e["to"].split(".")[-1]
+            src = pretty_module_name(e["from"])
+            dst = pretty_module_name(e["to"])
             edge_labels.append(f"{src} → {dst}")
             edge_weights.append(e.get("weight", 0.5))
             edge_colors.append(
@@ -885,17 +886,26 @@ def run_circuit_discovery_fig(
 def run_batch_patching_fig(
     lens: ModelLens,
     prompts_json: str,
-) -> Tuple[str, Any]:
-    """Run batch patching from JSON array of [clean, corrupted] pairs."""
+    *,
+    return_results: bool = False,
+):
+    """Run batch patching from JSON array of [clean, corrupted] pairs.
+
+    Returns ``(summary_html, fig)``. With ``return_results=True``, also returns the
+    raw ``results`` dict as a third element (for Streamlit text summaries).
+    """
     try:
         raw = json.loads(prompts_json)
     except json.JSONDecodeError as e:
-        return f"<p>Invalid JSON: {e}</p>", _empty_fig("Invalid JSON input")
+        bad = (f"<p>Invalid JSON: {e}</p>", _empty_fig("Invalid JSON input"))
+        return bad if not return_results else (*bad, {})
 
     if not isinstance(raw, list) or not raw:
-        return "<p>Provide a JSON array of [clean, corrupted] pairs.</p>", _empty_fig(
-            "Empty input"
+        bad = (
+            "<p>Provide a JSON array of [clean, corrupted] pairs.</p>",
+            _empty_fig("Empty input"),
         )
+        return bad if not return_results else (*bad, {})
 
     pairs = []
     for item in raw:
@@ -907,7 +917,8 @@ def run_batch_patching_fig(
             pairs.append((c_t, k_t))
 
     if not pairs:
-        return "<p>No valid pairs found.</p>", _empty_fig("No valid pairs")
+        bad = ("<p>No valid pairs found.</p>", _empty_fig("No valid pairs"))
+        return bad if not return_results else (*bad, {})
 
     # Clear hooks
     for _, module in lens.model.named_modules():
@@ -978,6 +989,8 @@ def run_batch_patching_fig(
     else:
         fig = _empty_fig("No batch patching results.")
 
+    if return_results:
+        return summary_html, fig, results
     return summary_html, fig
 
 

@@ -1,4 +1,6 @@
 import streamlit as st
+
+from config.prompt_sync import merge_chat_and_shared_clean
 from modellens.analysis.embeddings import run_embeddings_analysis
 from modellens.visualization import (
     plot_embedding_similarity_heatmap,
@@ -68,8 +70,19 @@ def render():
                         st.text(f"{label:15s}  ‖e‖ = {norms.flatten()[i]:.4f}")
 
     # ── Prompt input ──
-    prompt = st.chat_input("Enter a prompt to analyze embeddings")
-    if prompt:
+    c1, _ = st.columns([1, 5])
+    with c1:
+        run_sb = st.button(
+            "Run",
+            type="primary",
+            key="embeddings_run_sidebar",
+            help="Use the clean prompt from the Analysis sidebar",
+        )
+    chat = st.chat_input("Enter a prompt (or use sidebar + Run)")
+    prompt = merge_chat_and_shared_clean(chat, run_sb)
+    if run_sb and not prompt:
+        st.error("Set a clean prompt in the sidebar (Shared prompts), or use the chat bar.")
+    elif prompt:
         with st.spinner("Running embeddings analysis..."):
             lens.clear()
 
@@ -77,16 +90,6 @@ def render():
 
             tokens = tokenize_prompt(prompt, model_info)
             results = run_embeddings_analysis(lens, tokens)
-
-            # Add decoded token labels
-            if tokenizer:
-                results["token_labels"] = tokenizer.convert_ids_to_tokens(
-                    tokenizer(prompt)["input_ids"]
-                )
-            elif "token_labels" not in results:
-                results["token_labels"] = [
-                    str(i) for i in range(results.get("seq_length", 0))
-                ]
 
             lens.clear()
 

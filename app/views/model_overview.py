@@ -128,7 +128,10 @@ def filter_params(model, max_depth, family_filter):
 
 def render():
     st.header("Model Overview")
-    st.caption("Inspect model characteristics before any processing.")
+    st.caption(
+        "Use this page to orient yourself before analysis: model structure, tensor flow, "
+        "and parameter concentration by subsystem."
+    )
 
     model_info = st.session_state.get("model_info")
     if not model_info:
@@ -167,14 +170,46 @@ def render():
     # ── Model Info ──
     st.markdown(st.session_state["md"])
 
-    # ── Architecture Tree ──
+    # ── Architecture / shapes / flow ──
     st.divider()
-    st.subheader("Architecture")
-    render_model_tree(st.session_state["overview_rows"])
+    st.subheader("Structure")
+    st.caption(
+        "This section answers: what is the model made of, and where does data move during one forward pass?"
+    )
+    rows = st.session_state["overview_rows"]
+    tab_tree, tab_shape, tab_flow = st.tabs(
+        ["Module tree", "Shape trace (table)", "Module flow (Mermaid)"]
+    )
+    with tab_tree:
+        st.caption(
+            "Tree view is best for navigation. Repeated block patterns suggest where behaviors can recur across depth."
+        )
+        render_model_tree(rows)
+    with tab_shape:
+        fig_shape = plot_shape_trace_table(
+            rows, max_rows=60, title="Tensor shapes along the forward path"
+        )
+        st.plotly_chart(fig_shape, use_container_width=True)
+        st.caption(
+            "Look for abrupt shape changes or unexpected bottlenecks; stable repeated shapes are common in transformer blocks."
+        )
+    with tab_flow:
+        mer = shape_trace_mermaid(rows, max_nodes=24)
+        st.caption(
+            "Mermaid diagram of module connectivity (truncated for readability). "
+            "If your viewer does not render diagrams, paste into [mermaid.live](https://mermaid.live)."
+        )
+        st.markdown(f"```mermaid\n{mer}\n```")
+        st.caption(
+            "Use the flow diagram as a quick map of module order; it is a structural guide, not a performance ranking."
+        )
 
     # ── Parameter Breakdown ──
     st.divider()
     st.subheader("Parameter Breakdown")
+    st.caption(
+        "Parameter mass hints at where capacity lives. Large families often dominate learning dynamics and adaptation behavior."
+    )
 
     with st.popover("⚙️ Settings"):
         max_depth = st.slider("Module depth", min_value=2, max_value=5, value=3)
@@ -190,3 +225,6 @@ def render():
             model_info["model"], max_depth=max_depth
         )
         st.plotly_chart(fig_params, use_container_width=True)
+        st.caption(
+            "Compare families rather than exact counts alone; a concentrated distribution can make downstream diagnostics easier to interpret."
+        )

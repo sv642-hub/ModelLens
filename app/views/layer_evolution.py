@@ -1,4 +1,10 @@
 import streamlit as st
+
+from config.prompt_sync import (
+    get_shared_corrupted,
+    merge_chat_and_shared_clean,
+    shared_prompts_callout,
+)
 from modellens.analysis.layer_evolution import (
     run_layer_evolution_comparison,
     compute_evolution_heatmap,
@@ -34,6 +40,7 @@ def render():
         "Track how the logit distribution shifts across layers "
         "between a clean and corrupted input, smoothed with a gaussian kernel."
     )
+    shared_prompts_callout()
 
     model_info = st.session_state.get("model_info")
     if not model_info:
@@ -42,16 +49,6 @@ def render():
 
     lens = model_info["lens"]
     tokenizer = model_info["tokenizer"]
-
-    # ── Corrupted prompt in sidebar ──
-    with st.sidebar:
-        st.subheader("Layer Evolution")
-        corrupted = st.text_input(
-            "Corrupted prompt",
-            value=st.session_state.get("evo_corrupted", "The capital of xyzzy is"),
-            key="evo_corrupted_input",
-        )
-        st.session_state["evo_corrupted"] = corrupted
 
     # ── Settings popover ──
     with st.popover("⚙️ Settings"):
@@ -68,39 +65,51 @@ def render():
             div_metric=div_metric,
         )
 
-    # ── Chat input for clean prompt ──
-    prompt = st.chat_input("Enter a clean prompt to compare")
-    if prompt:
-        corrupted = st.session_state.get("evo_corrupted", "")
+    c1, _ = st.columns([1, 5])
+    with c1:
+        run_sb = st.button(
+            "Run",
+            type="primary",
+            key="layer_evo_run_sidebar",
+            help="Use shared clean & corrupted prompts from the Analysis sidebar",
+        )
+    chat = st.chat_input("Enter a clean prompt to compare (or use sidebar + Run)")
+    prompt = merge_chat_and_shared_clean(chat, run_sb)
+    if run_sb and not prompt:
+        st.error("Set a clean prompt in the sidebar (Shared prompts), or use the chat bar.")
+    elif prompt:
+        corrupted = get_shared_corrupted()
         if not corrupted:
-            st.error("Enter a corrupted prompt in the sidebar first.")
-            return
+            st.error("Set a corrupted prompt in the sidebar (Shared prompts).")
+        else:
+            with st.spinner("Running layer evolution analysis..."):
+                from config.utils import tokenize_prompt
 
-        with st.spinner("Running layer evolution analysis..."):
-            from config.utils import tokenize_prompt
+                clean_tokens = tokenize_prompt(prompt, model_info)
+                corrupted_tokens = tokenize_prompt(corrupted, model_info)
 
-            clean_tokens = tokenize_prompt(prompt, model_info)
-            corrupted_tokens = tokenize_prompt(corrupted, model_info)
+                comparison = run_layer_evolution_comparison(
+                    lens,
+                    clean_tokens,
+                    corrupted_tokens,
+                    top_k=10,
+                    tokenizer=tokenizer,
+                )
 
-            comparison = run_layer_evolution_comparison(
-                lens,
-                clean_tokens,
-                corrupted_tokens,
-                top_k=10,
-                tokenizer=tokenizer,
-            )
+                filtered = _filter_block_layers(comparison)
 
-            filtered = _filter_block_layers(comparison)
-
-            st.session_state["evo_results"] = filtered
-            st.session_state["evo_clean_prompt"] = prompt
-            st.rerun()
+                st.session_state["evo_results"] = filtered
+                st.session_state["evo_clean_prompt"] = prompt
+                st.session_state["evo_corrupted"] = corrupted
+                st.rerun()
 
 
 def _display_results(comparison, n_bins, sigma, div_metric):
     """Render the three visualizations."""
-    clean_prompt = st.session_state.get("evo_clean_prompt", "")
-    corrupted_prompt = st.session_state.get("evo_corrupted", "")
+    from config.prompt_sync import get_shared_clean, get_shared_corrupted
+
+    clean_prompt = st.session_state.get("evo_clean_prompt", "") or get_shared_clean()
+    corrupted_prompt = st.session_state.get("evo_corrupted", "") or get_shared_corrupted()
 
     # ── Prompt info ──
     col1, col2 = st.columns(2)

@@ -23,6 +23,8 @@ def load_hf_model(model_name: str):
     model = AutoModelForCausalLM.from_pretrained(hf_id, attn_implementation="eager")
     model.eval()
     lens = ModelLens(model)
+    if hasattr(lens.adapter, "set_tokenizer"):
+        lens.adapter.set_tokenizer(tokenizer)
 
     return {
         "model": model,

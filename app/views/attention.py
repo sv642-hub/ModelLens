@@ -1,5 +1,14 @@
 import streamlit as st
 import numpy as np
+
+from config.prompt_sync import (
+    get_shared_clean,
+    get_shared_corrupted,
+    merge_chat_and_shared_clean,
+    shared_prompt_status_row,
+    shared_prompts_callout,
+    shared_run_hint,
+)
 from modellens.analysis.attention import (
     run_attention_analysis,
     head_summary,
@@ -11,6 +20,10 @@ from modellens.visualization import (
     plot_attention_head_grid,
     plot_attention_head_entropy,
 )
+from modellens.visualization.comparison_story import (
+    plot_attention_comparison_heatmaps,
+    plot_attention_entropy_delta_heads,
+)
 
 
 def render():
@@ -19,6 +32,12 @@ def render():
         "Visualize which tokens each attention head focuses on. "
         "Low entropy = focused head. High entropy = diffuse."
     )
+    st.caption(
+        "Use attention as evidence of information routing and focus allocation, not as a standalone claim about model reasoning."
+    )
+    shared_prompts_callout()
+    shared_prompt_status_row()
+    shared_run_hint()
 
     # ── Check model is loaded ──
     model_info = st.session_state.get("model_info")
@@ -85,6 +104,9 @@ def render():
                 head_index=safe_head,
             )
             st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                "Darker cells indicate stronger attention weight. Check whether focus stays local or jumps to earlier context."
+            )
 
         elif viz_mode == "Head Grid":
             fig = plot_attention_head_grid(
@@ -93,6 +115,9 @@ def render():
                 max_heads=max_heads,
             )
             st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                "Head grid helps compare specialization: some heads stay diffuse while others consistently lock onto narrow token subsets."
+            )
 
         elif viz_mode == "Entropy":
             fig = plot_attention_head_entropy(
@@ -101,6 +126,9 @@ def render():
                 max_heads=max_heads,
             )
             st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                "Lower entropy generally means sharper focus. On weakly trained models, flatter entropy profiles are expected."
+            )
 
             # Pattern metrics summary
             metrics = compute_attention_pattern_metrics(attn_results)
@@ -122,98 +150,75 @@ def render():
                 if comp.get("error"):
                     st.error(f"Comparative attention error: {comp['error']}")
                 else:
-                    import plotly.graph_objects as go
-                    from plotly.subplots import make_subplots
-                    from modellens.visualization.common import default_plotly_layout
+                    clean_prompt = st.session_state.get(
+                        "attention_prompt", ""
+                    ) or get_shared_clean()
+                    corrupted_prompt = get_shared_corrupted()
+                    n_layers = len(ordered) - 1 if ordered else 0
+                    nh = 0
+                    if ordered:
+                        w0 = attn_results["attention_maps"][ordered[0]]["weights"]
+                        if hasattr(w0, "dim") and w0.dim() == 4:
+                            nh = int(w0.shape[1])
+                    max_head = max(nh - 1, 0)
 
-                    # Re-run comparative with updated layer/head
-                    clean_prompt = st.session_state.get("attention_prompt", "")
-                    corrupted_prompt = st.session_state.get(
-                        "attention_corrupted_prompt", ""
-                    )
-                    if clean_prompt and corrupted_prompt and tokenizer:
-                        comp_col1, comp_col2 = st.columns(2)
-                        with comp_col1:
-                            comp_layer = st.slider(
-                                "Layer",
-                                min_value=0,
-                                max_value=len(ordered) - 1 if ordered else 0,
-                                value=(
-                                    min(layer_idx, len(ordered) - 1) if ordered else 0
-                                ),
-                                key="comp_layer",
-                            )
-                        with comp_col2:
-                            comp_head = st.slider(
-                                "Head",
-                                min_value=0,
-                                max_value=24,
-                                value=0,
-                                key="comp_head",
-                            )
-
-                        clean_tokens = tokenizer(clean_prompt, return_tensors="pt")
-                        corrupted_tokens = tokenizer(
-                            corrupted_prompt, return_tensors="pt"
+                    comp_col1, comp_col2 = st.columns(2)
+                    with comp_col1:
+                        comp_layer = st.slider(
+                            "Layer",
+                            min_value=0,
+                            max_value=max(n_layers, 0),
+                            value=min(layer_idx, max(n_layers, 0)),
+                            key="comp_layer",
                         )
+                    with comp_col2:
+                        comp_head = st.slider(
+                            "Head",
+                            min_value=0,
+                            max_value=max_head,
+                            value=min(head_idx, max_head),
+                            key="comp_head",
+                        )
+
+                    if clean_prompt and corrupted_prompt:
+                        from config.utils import tokenize_prompt
+
+                        clean_tokens = tokenize_prompt(clean_prompt, model_info)
+                        corrupted_tokens = tokenize_prompt(
+                            corrupted_prompt, model_info
+                        )
+                        if tokenizer:
+                            lens.adapter.set_tokenizer(tokenizer)
                         comp = run_comparative_attention(
                             lens,
                             clean_tokens,
                             corrupted_tokens,
-                            layer_index=comp_layer,
-                            head_index=comp_head,
+                            layer_index=int(comp_layer),
+                            head_index=int(comp_head),
                         )
                         lens.clear()
+                        st.session_state["comparative_attention"] = comp
 
-                    labels = comp["token_labels"]
-                    fig = make_subplots(
-                        rows=1,
-                        cols=3,
-                        subplot_titles=["Clean", "Corrupted", "Delta"],
-                        horizontal_spacing=0.08,
-                    )
-                    for i, (mat, cs) in enumerate(
-                        [
-                            (comp["clean_weights"], "Blues"),
-                            (comp["corrupted_weights"], "Reds"),
-                            (comp["delta_weights"], "RdBu_r"),
-                        ]
-                    ):
-                        z = (
-                            mat.detach().cpu().numpy()
-                            if hasattr(mat, "detach")
-                            else mat
-                        )
-                        fig.add_trace(
-                            go.Heatmap(
-                                z=z,
-                                x=labels,
-                                y=labels,
-                                colorscale=cs,
-                                showscale=(i == 2),
-                                texttemplate="%{z:.2f}",
+                    if comp.get("error"):
+                        st.error(f"Comparative attention error: {comp['error']}")
+                    else:
+                        fig_cmp = plot_attention_comparison_heatmaps(
+                            comp,
+                            title=(
+                                f"Attention — {comp.get('layer_name_clean', '')} "
+                                f"head {comp.get('head_index', 0)}"
                             ),
-                            row=1,
-                            col=i + 1,
                         )
-                    fig.update_layout(
-                        **default_plotly_layout(
-                            title=f"Comparative — {comp.get('layer_name_clean', '')} head {comp.get('head_index', 0)}",
-                            width=1200,
-                            height=450,
+                        st.plotly_chart(fig_cmp, use_container_width=True)
+                        fig_ent = plot_attention_entropy_delta_heads(comp)
+                        st.plotly_chart(fig_ent, use_container_width=True)
+                        st.caption(
+                            "If clean and corrupted maps diverge early, corruption is affecting token routing before final prediction."
                         )
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # Entropy delta
-                    ent_delta = comp.get("entropy_delta_per_head", [])
-                    if ent_delta:
-                        with st.expander("Entropy delta per head"):
-                            for i, d in enumerate(ent_delta):
-                                st.text(f"Head {i}: {d:+.4f}")
             else:
                 st.info(
-                    "Enter both a clean and corrupted prompt to see comparative attention."
+                    "Run attention on a clean prompt, and set a **corrupted prompt** "
+                    "in the Analysis sidebar (Shared prompts) to see comparative attention."
                 )
 
         # ── Head summary expander ──
@@ -228,9 +233,20 @@ def render():
                 if max_attn:
                     st.text(f"  Max attention:  {[f'{a:.2f}' for a in max_attn]}")
 
-    # ── Prompt input ──
-    prompt = st.chat_input("Enter a prompt to analyze attention")
-    if prompt:
+    # ── Prompt input (shared clean prompt in Analysis sidebar) ──
+    c1, _ = st.columns([1, 5])
+    with c1:
+        run_sb = st.button(
+            "Run",
+            type="primary",
+            key="attention_run_sidebar",
+            help="Use the clean prompt from the Analysis sidebar",
+        )
+    chat = st.chat_input("Enter a prompt (or use sidebar + Run)")
+    prompt = merge_chat_and_shared_clean(chat, run_sb)
+    if run_sb and not prompt:
+        st.error("Set a clean prompt in the sidebar (Shared prompts), or use the chat bar.")
+    elif prompt:
         with st.spinner("Running attention analysis..."):
             lens.clear()
 
@@ -259,13 +275,12 @@ def render():
             st.session_state["attention_results"] = attn_results
             st.session_state["attention_prompt"] = prompt
 
-            # If we have a corrupted prompt stored, run comparative
-            corrupted = st.session_state.get("attention_corrupted_prompt")
+            corrupted = get_shared_corrupted()
             if corrupted:
-                from config.utils import tokenize_prompt
-
                 clean_tokens = tokenize_prompt(prompt, model_info)
                 corrupted_tokens = tokenize_prompt(corrupted, model_info)
+                if tokenizer:
+                    lens.adapter.set_tokenizer(tokenizer)
                 comp = run_comparative_attention(
                     lens,
                     clean_tokens,
@@ -277,17 +292,3 @@ def render():
                 lens.clear()
 
             st.rerun()
-
-    # ── Corrupted prompt for comparative mode ──
-    if viz_mode == "Comparative":
-        with st.sidebar:
-            st.divider()
-            corrupted_prompt = st.text_input(
-                "Corrupted prompt (for comparative)",
-                value=st.session_state.get("attention_corrupted_prompt", ""),
-                help="Enter a corrupted version of your prompt to compare attention patterns.",
-            )
-            if corrupted_prompt != st.session_state.get(
-                "attention_corrupted_prompt", ""
-            ):
-                st.session_state["attention_corrupted_prompt"] = corrupted_prompt

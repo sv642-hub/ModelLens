@@ -7,7 +7,11 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from modellens.visualization.common import default_plotly_layout, truncate_label
-from modellens.visualization.module_families import family_color_map, infer_module_family
+from modellens.visualization.module_families import (
+    family_color_map,
+    infer_module_family,
+    pretty_module_name,
+)
 
 try:
     import plotly.graph_objects as go
@@ -35,10 +39,10 @@ def plot_divergence_by_module(
         return fig
 
     vals = [float(r.get(metric, 0.0)) for r in records]
-    names = [r["module_name"] for r in records]
+    raw_names = [r["module_name"] for r in records]
     order = np.argsort(np.abs(vals))[::-1][: max(1, int(top_n))]
     vals = [vals[i] for i in order]
-    names = [truncate_label(names[i], 44) for i in order]
+    names = [truncate_label(pretty_module_name(raw_names[i]), 44) for i in order]
     colors = [family_color_map().get(infer_module_family(records[i]["module_name"]), "#64748b") for i in order]
 
     fig = go.Figure(
@@ -47,7 +51,10 @@ def plot_divergence_by_module(
             y=names,
             orientation="h",
             marker_color=colors,
-            hovertemplate="%{y}<br>" + metric + "=%{x:.4f}<extra></extra>",
+            customdata=[raw_names[i] for i in order],
+            hovertemplate="%{y}<br>raw=%{customdata}<br>"
+            + metric
+            + "=%{x:.4f}<extra></extra>",
         )
     )
     fig.update_xaxes(title_text=metric.replace("_", " "))
@@ -106,7 +113,7 @@ def plot_logit_lens_comparison_trajectories(
         fig.update_layout(**default_plotly_layout(title="No comparative logit data", width=width, height=height))
         return fig
     x = list(range(len(layers)))
-    labels = [truncate_label(n, 20) for n in layers]
+    labels = [truncate_label(pretty_module_name(n), 20) for n in layers]
     cprob = comparative.get("clean_top1_prob") or []
     kprob = comparative.get("corrupted_top1_prob") or []
     ent_d = comparative.get("entropy_delta") or []

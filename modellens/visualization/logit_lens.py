@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 import numpy as np
 from modellens.visualization.common import default_plotly_layout, truncate_label
+from modellens.utils.token_display import prettify_subword_token
 
 try:
     import plotly.graph_objects as go
@@ -54,9 +55,11 @@ def _decode_token_ids(token_ids: List[str], tokenizer=None) -> List[str]:
     decoded = []
     for tid in token_ids:
         try:
-            decoded.append(tokenizer.convert_ids_to_tokens([tid])[0] or tid)
-        except (ValueError, KeyError):
-            decoded.append(tid)
+            tid_int = int(tid) if not isinstance(tid, int) else tid
+            piece = tokenizer.convert_ids_to_tokens([tid_int])[0] or str(tid)
+            decoded.append(prettify_subword_token(piece))
+        except (ValueError, KeyError, TypeError):
+            decoded.append(prettify_subword_token(str(tid)))
     return decoded
 
 

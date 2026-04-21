@@ -1,4 +1,6 @@
 import streamlit as st
+
+from config.prompt_sync import merge_chat_and_shared_clean
 from modellens.analysis.residual_stream import (
     run_residual_analysis,
     identify_critical_layers,
@@ -14,6 +16,9 @@ def render():
     st.caption(
         "Measure how much each layer contributes to the residual stream. "
         "Critical layers change the representation the most."
+    )
+    st.caption(
+        "Use this to see where updates accumulate along depth: large contributions often mark layers strongly reshaping the running representation."
     )
 
     model_info = st.session_state.get("model_info")
@@ -68,6 +73,9 @@ def render():
             fig = plot_residual_contributions(results, mode=mode_map[viz_mode])
 
         st.plotly_chart(fig, use_container_width=True)
+        st.caption(
+            "Relative/delta/cosine modes provide different lenses on the same update process; compare patterns rather than single points."
+        )
 
         # ── Raw data expander ──
         with st.expander("Layer contributions"):
@@ -77,8 +85,19 @@ def render():
                 st.text(f"{name:30s}  rel={rel:.4f}  cos={cos:.4f}")
 
     # ── Prompt input ──
-    prompt = st.chat_input("Enter a prompt to analyze residual stream")
-    if prompt:
+    c1, _ = st.columns([1, 5])
+    with c1:
+        run_sb = st.button(
+            "Run",
+            type="primary",
+            key="residual_run_sidebar",
+            help="Use the clean prompt from the Analysis sidebar",
+        )
+    chat = st.chat_input("Enter a prompt (or use sidebar + Run)")
+    prompt = merge_chat_and_shared_clean(chat, run_sb)
+    if run_sb and not prompt:
+        st.error("Set a clean prompt in the sidebar (Shared prompts), or use the chat bar.")
+    elif prompt:
         with st.spinner("Running residual stream analysis..."):
             lens.clear()
 

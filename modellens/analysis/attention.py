@@ -2,6 +2,7 @@ import torch
 from typing import Any, Dict, List, Optional
 
 from modellens.analysis.hf_inputs import hf_inputs_to_dict
+from modellens.utils.token_display import prettify_subword_tokens
 
 
 def _token_labels_from_inputs(lens, inputs: Any) -> List[str]:
@@ -18,11 +19,11 @@ def _token_labels_from_inputs(lens, inputs: Any) -> List[str]:
     tok = getattr(lens.adapter, "_tokenizer", None)
     if tok is not None:
         try:
-            return [tok.decode([i]) for i in ids]
+            return prettify_subword_tokens([tok.decode([i]) for i in ids])
         except Exception:
             pass
         try:
-            return tok.convert_ids_to_tokens(ids)
+            return prettify_subword_tokens(tok.convert_ids_to_tokens(ids))
         except Exception:
             pass
     return [str(i) for i in ids]

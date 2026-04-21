@@ -11,6 +11,7 @@ import html as html_module
 from typing import Any, Dict, List, Optional, Tuple
 
 from modellens import ModelLens
+from modellens.utils.token_display import prettify_subword_token
 from modellens.analysis.activation_patching import run_activation_patching
 from modellens.analysis.attention import run_comparative_attention
 from modellens.analysis.comparison import compare_forward_outputs, run_comparative_logit_lens
@@ -40,10 +41,12 @@ def _decode_token_id(lens: ModelLens, tid: int) -> str:
     tok = getattr(lens.adapter, "_tokenizer", None)
     if tok is not None:
         try:
-            return tok.decode([tid])
+            return prettify_subword_token(tok.decode([tid]))
         except Exception:
             try:
-                return str(tok.convert_ids_to_tokens([tid])[0])
+                return prettify_subword_token(
+                    str(tok.convert_ids_to_tokens([tid])[0])
+                )
             except Exception:
                 pass
     return str(tid)

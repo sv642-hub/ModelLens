@@ -2,6 +2,8 @@ import torch
 import torch.nn.functional as F
 from typing import Dict, List, Optional
 
+from modellens.utils.token_display import prettify_subword_tokens
+
 
 def _embed_token_labels(lens, inputs, **kwargs) -> List[str]:
     """Decode token ids to labels for embedding plots."""
@@ -24,11 +26,11 @@ def _embed_token_labels(lens, inputs, **kwargs) -> List[str]:
     tok = getattr(lens.adapter, "_tokenizer", None)
     if tok is not None:
         try:
-            return [tok.decode([i]) for i in ids]
+            return prettify_subword_tokens([tok.decode([i]) for i in ids])
         except Exception:
             pass
         try:
-            return tok.convert_ids_to_tokens(ids)
+            return prettify_subword_tokens(tok.convert_ids_to_tokens(ids))
         except Exception:
             pass
     return [str(i) for i in ids]

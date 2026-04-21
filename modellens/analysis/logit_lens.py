@@ -2,6 +2,8 @@ import torch
 import torch.nn.functional as F
 from typing import Dict, List, Optional
 
+from modellens.utils.token_display import prettify_subword_token
+
 
 def run_logit_lens(
     lens,
@@ -97,7 +99,11 @@ def run_logit_lens(
             for i in range(idx.shape[0]):
                 tid = idx[i].item()
                 try:
-                    toks.append(tokenizer.convert_ids_to_tokens([tid])[0])
+                    toks.append(
+                        prettify_subword_token(
+                            tokenizer.convert_ids_to_tokens([tid])[0]
+                        )
+                    )
                 except Exception:
                     toks.append(tokenizer.decode([tid]))
             top_tokens_per_layer.append(toks)
@@ -155,9 +161,11 @@ def decode_logit_lens(results: Dict, tokenizer=None, vocab=None) -> Dict:
             for idx, prob in zip(indices, probs):
                 tid = idx.item()
                 try:
-                    tok = tokenizer.convert_ids_to_tokens([tid])[0]
+                    tok = prettify_subword_token(
+                        tokenizer.convert_ids_to_tokens([tid])[0]
+                    )
                 except Exception:
-                    tok = tokenizer.decode([tid])
+                    tok = prettify_subword_token(tokenizer.decode([tid]))
                 decoded[name].append((tok, prob.item()))
         else:
             decoded[name] = [

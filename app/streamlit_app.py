@@ -6,7 +6,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from modellens import ModelLens
 from config.config import VIEWS, TAB_CATEGORIES, HF_MODEL_MAP
+from config.prompt_sync import (
+    SHARED_CLEAN,
+    SHARED_CORRUPTED,
+    init_and_migrate_shared_prompts,
+)
 from config.utils import *
+
+init_and_migrate_shared_prompts()
 
 #  PAGE CONFIG
 st.set_page_config(
@@ -103,6 +110,25 @@ with st.sidebar:
         category = st.selectbox("Category", list(TAB_CATEGORIES.keys()))
         page = st.selectbox("Analysis", TAB_CATEGORIES[category])
         st.session_state["page"] = page
+
+        st.divider()
+        st.markdown("**Shared prompts**")
+        st.caption(
+            "Same clean and corrupted text on every analysis page — edit here once, "
+            "or send from a page’s chat bar (it updates these fields)."
+        )
+        st.text_area(
+            "Clean prompt",
+            key=SHARED_CLEAN,
+            height=88,
+            placeholder="Used for logit lens, attention, patching, etc.",
+        )
+        st.text_area(
+            "Corrupted prompt",
+            key=SHARED_CORRUPTED,
+            height=88,
+            placeholder="Used for patching, comparison, comparative attention, demos…",
+        )
 
     st.divider()
 

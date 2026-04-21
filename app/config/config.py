@@ -16,7 +16,6 @@ from views import (
     presentation_demo,
     circuit_discovery,
     batch_patching,
-    layer_evolution,
 )
 
 VIEWS = {

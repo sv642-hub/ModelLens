@@ -72,3 +72,38 @@ def family_color_map() -> Dict[str, str]:
         "other": "#64748b",
     }
 
+
+def pretty_module_name(module_name: str) -> str:
+    """Human-readable alias for module paths while preserving technical detail elsewhere."""
+    s = (module_name or "").strip()
+    if not s:
+        return "Unknown module"
+
+    m = re.search(r"(?:^|\.)(?:h|blocks)\.(\d+)(?:\.|$)", s)
+    block_idx = int(m.group(1)) if m else None
+    block_prefix = f"Block {block_idx + 1}" if block_idx is not None else None
+    low = s.lower()
+
+    if "wte" in low or "token_embed" in low or low.endswith("embed"):
+        return "Token embedding layer"
+    if "wpe" in low or "position_embed" in low:
+        return "Position embedding layer"
+    if "ln_f" in low or "lnf" in low:
+        return "Final normalization"
+    if "lm_head" in low or "unembed" in low:
+        return "Output projection head"
+    if "attn" in low or "attention" in low or "self_attn" in low:
+        return f"{block_prefix} attention" if block_prefix else "Attention module"
+    if re.search(r"(^|\.)(mlp)(\.|$)", low):
+        return f"{block_prefix} feed-forward" if block_prefix else "Feed-forward module"
+    if "ln_" in low or "layernorm" in low or "norm" in low:
+        return f"{block_prefix} normalization" if block_prefix else "Normalization layer"
+    return s
+
+
+def pretty_with_raw(module_name: str) -> str:
+    alias = pretty_module_name(module_name)
+    if alias == module_name:
+        return module_name
+    return f"{alias} [{module_name}]"
+

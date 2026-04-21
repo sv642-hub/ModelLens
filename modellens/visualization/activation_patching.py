@@ -8,6 +8,7 @@ from modellens.visualization.schemas import patching_dict_to_viz
 from modellens.visualization.module_families import (
     family_color_map,
     infer_module_family,
+    pretty_module_name,
 )
 
 try:
@@ -59,7 +60,7 @@ def plot_patching_importance_bar(
         fig.update_layout(**default_plotly_layout(title=t, width=width, height=height))
         return fig
 
-    labels = [truncate_label(m, max_len=48) for m in module_names]
+    labels = [truncate_label(pretty_module_name(m), max_len=48) for m in module_names]
     order = np.argsort(np.abs(vals))[::-1]
     if display_mode == "top_n":
         order = order[: max(1, int(top_n))]
@@ -72,7 +73,8 @@ def plot_patching_importance_bar(
             y=labels,
             orientation="h",
             marker_color=np.where(vals >= 0, "#16a34a", "#dc2626"),
-            hovertemplate="module=%{y}<br>effect=%{x:.4f}<extra></extra>",
+            customdata=[module_names[i] for i in order],
+            hovertemplate="module=%{y}<br>raw=%{customdata}<br>effect=%{x:.4f}<extra></extra>",
         )
     )
     ylab = "Normalized effect" if use_normalized else "Effect (metric delta)"
@@ -91,7 +93,7 @@ def plot_patching_importance_heatmap(
 ) -> "go.Figure":
     """Single-row heatmap of normalized effects (compact slide-friendly)."""
     v = patching_dict_to_viz(patching_result)
-    labels = [truncate_label(m, max_len=32) for m in v.module_names]
+    labels = [truncate_label(pretty_module_name(m), max_len=32) for m in v.module_names]
     z = v.normalized_effects.reshape(1, -1)
 
     fig = go.Figure(
