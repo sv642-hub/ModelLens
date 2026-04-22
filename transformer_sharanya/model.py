@@ -43,6 +43,8 @@ class TransformerBlock(nn.Module):
         normed = self.ln_2(x)
         x = x + self.mlp(normed)
 
+        # Ensure output is always a tensor
+        assert x is not None, "TransformerBlock forward returned None!"
         return x
 
 
@@ -75,11 +77,18 @@ class SentimentTransformer(nn.Module):
         self.ln_f = nn.LayerNorm(hidden_dim)
         self.classifier = nn.Linear(hidden_dim, num_classes)
 
+    @property
+    def unembedding(self):
+        # For logit lens: use the embedding weights as the unembedding matrix (tied weights)
+        # Shape: (hidden_dim, vocab_size)
+        return self.embed.weight.T
+
     def forward(
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        return_hidden_states: bool = False,
+    ):
         """Return logits of shape (batch, num_classes)."""
         # input_ids: (batch, seq_len)
         batch_size, seq_len = input_ids.shape
@@ -92,9 +101,11 @@ class SentimentTransformer(nn.Module):
         # Add token and position embeddings.
         x = self.embed(input_ids) + self.pos_embed(positions)
 
+        hidden_states = []
         # Pass through transformer blocks.
         for block in self.blocks:
             x = block(x)
+            hidden_states.append(x)
 
         # Final norm.
         x = self.ln_f(x)
@@ -110,6 +121,11 @@ class SentimentTransformer(nn.Module):
 
         # Classification logits.
         logits = self.classifier(pooled)
+
+        if return_hidden_states:
+            return logits, hidden_states
+        # Ensure output is always a tensor
+        assert logits is not None, "SentimentTransformer forward returned None!"
         return logits
 
 
