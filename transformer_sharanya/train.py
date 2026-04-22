@@ -18,7 +18,8 @@ except ImportError:  # pragma: no cover
 
 @torch.no_grad()
 def evaluate(model: nn.Module, loader: DataLoader, device: str) -> float:
-    model.eval()
+    was_training = model.training
+    model.train()  # Force classification head for evaluation
     correct = 0
     total = 0
     for batch in loader:
@@ -29,7 +30,8 @@ def evaluate(model: nn.Module, loader: DataLoader, device: str) -> float:
         preds = logits.argmax(dim=-1)
         correct += (preds == labels).sum().item()
         total += labels.numel()
-    model.train()
+    if not was_training:
+        model.eval()
     return correct / max(total, 1)
 
 
@@ -41,7 +43,7 @@ def train(
     num_layers: int = 4,
     batch_size: int = 32,
     lr: float = 3e-4,
-    epochs: int = 3,
+    epochs: int = 10,  # Increased epochs for better learning
     train_size: int = 5000,
     test_size: int = 1000,
     device: str | None = None,

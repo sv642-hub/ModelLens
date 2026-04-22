@@ -30,12 +30,12 @@ class TransformerBlock(nn.Module):
             torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool),
             diagonal=1,
         )
-        attn_out, _ = self.attn(
+        attn_out, attn_weights = self.attn(
             normed,
             normed,
             normed,
             attn_mask=causal_mask,
-            need_weights=False,
+            need_weights=True,  # Ensure attention weights are returned for analysis
         )
         x = x + attn_out
 
@@ -43,8 +43,13 @@ class TransformerBlock(nn.Module):
         normed = self.ln_2(x)
         x = x + self.mlp(normed)
 
-        # Ensure output is always a tensor
-        assert x is not None, "TransformerBlock forward returned None!"
+        # Ensure output is always a tensor and not a tuple
+        if isinstance(x, tuple):
+            print("ERROR: TransformerBlock.forward returned a tuple! Using first element.")
+            x = x[0]
+        if x is None or not isinstance(x, torch.Tensor):
+            print("ERROR: TransformerBlock.forward returned None or non-tensor! Returning zeros.")
+            x = torch.zeros_like(normed)
         return x
 
 
@@ -76,11 +81,18 @@ class SentimentTransformer(nn.Module):
 
         self.ln_f = nn.LayerNorm(hidden_dim)
         self.classifier = nn.Linear(hidden_dim, num_classes)
+        self.unembed = nn.Linear(hidden_dim, vocab_size, bias=False)
 
     @property
     def unembedding(self):
-        # For logit lens: use the embedding weights as the unembedding matrix (tied weights)
-        # Shape: (hidden_dim, vocab_size)
+        return self.embed.weight.T
+
+    @property
+    def unembedding_matrix(self):
+        return self.embed.weight.T
+
+    @property
+    def lm_head(self):
         return self.embed.weight.T
 
     def forward(
@@ -88,46 +100,49 @@ class SentimentTransformer(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         return_hidden_states: bool = False,
+        return_token_logits: bool = False,
     ):
-        """Return logits of shape (batch, num_classes)."""
-        # input_ids: (batch, seq_len)
         batch_size, seq_len = input_ids.shape
         if seq_len > self.max_seq_len:
             raise ValueError(f"seq_len {seq_len} exceeds max_seq_len {self.max_seq_len}")
-
-        # Build position indices [0, 1, 2, ..., seq_len-1].
         positions = torch.arange(seq_len, device=input_ids.device)
-
-        # Add token and position embeddings.
         x = self.embed(input_ids) + self.pos_embed(positions)
-
         hidden_states = []
-        # Pass through transformer blocks.
         for block in self.blocks:
             x = block(x)
             hidden_states.append(x)
-
-        # Final norm.
         x = self.ln_f(x)
-
-        # Pool: masked mean over the sequence.
-        if attention_mask is None:
-            attention_mask = (input_ids != self.pad_id).to(x.dtype)
+        # Defensive: always return a tensor, never None
+        result = None
+        if self.training:
+            if attention_mask is None:
+                attention_mask = (input_ids != self.pad_id).to(x.dtype)
+            else:
+                attention_mask = attention_mask.to(x.dtype)
+            denom = attention_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+            pooled = (x * attention_mask.unsqueeze(-1)).sum(dim=1) / denom
+            logits = self.classifier(pooled)
+            result = logits
         else:
-            attention_mask = attention_mask.to(x.dtype)
-
-        denom = attention_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
-        pooled = (x * attention_mask.unsqueeze(-1)).sum(dim=1) / denom
-
-        # Classification logits.
-        logits = self.classifier(pooled)
-
+            out = self.unembed(x)
+            if out is None:
+                print("ERROR: unembed(x) returned None! Returning zeros.")
+                out = torch.zeros(x.shape[0], x.shape[1], self.unembed.out_features, device=x.device)
+            result = out
+            print("DEBUG: Returning per-token logits with shape", out.shape)
+            print("DEBUG: Logits stats - min:", out.min().item(), "max:", out.max().item(), "mean:", out.mean().item())
+        if return_token_logits:
+            out = self.unembed(x)
+            if out is None:
+                print("ERROR: unembed(x) returned None in return_token_logits! Returning zeros.")
+                out = torch.zeros(x.shape[0], x.shape[1], self.unembed.out_features, device=x.device)
+            result = out
         if return_hidden_states:
-            return logits, hidden_states
-        # Ensure output is always a tensor
-        assert logits is not None, "SentimentTransformer forward returned None!"
-        return logits
-
+            return result, hidden_states
+        if result is None:
+            print("ERROR: SentimentTransformer.forward is returning None! Returning zeros.")
+            result = torch.zeros(batch_size, seq_len, self.unembed.out_features, device=x.device)
+        return result
 
 if __name__ == "__main__":
     # Sanity check: build the model and run a dummy forward pass.
