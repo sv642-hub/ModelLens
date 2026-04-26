@@ -103,6 +103,7 @@ def plot_patching_importance_heatmap(
             y=["effect"],
             colorscale="RdYlGn",
             zmid=0.0,
+            texttemplate="%{z:.2f}",
             hovertemplate="%{x}<br>norm_effect=%{z:.4f}<extra></extra>",
         )
     )
@@ -276,6 +277,7 @@ def plot_patching_family_effect_recovery_heatmap(
             x=x_labels,
             y=y_labels,
             colorscale="RdYlGn",
+            texttemplate="%{z:.2f}",
             zmid=0.0,
             hovertemplate="family=%{y}<br>%{x}=%{z:.4f}<extra></extra>",
         )

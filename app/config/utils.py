@@ -13,6 +13,46 @@ from config.config import HF_MODEL_MAP
 from modellens import ModelLens
 
 
+def predict(model_info, tokens, max_tokens=50):
+    """
+    Generate a prediction from any model type.
+
+    Args:
+        model_info: Session model info dict with model, tokenizer, vocab, etc.
+        tokens: Tokenized input (dict for HF, tensor for local).
+        max_tokens: Maximum new tokens to generate.
+
+    Returns:
+        String with the model's generated output.
+    """
+
+    tokenizer = model_info.get("tokenizer")
+    try:
+        if tokenizer:
+            input_ids = tokens["input_ids"] if hasattr(tokens, "input_ids") else tokens
+            with torch.no_grad():
+                output_ids = model_info["model"].generate(
+                    input_ids,
+                    max_new_tokens=max_tokens,
+                    do_sample=False,
+                )
+            return tokenizer.decode(output_ids[0], skip_special_tokens=True)
+
+        elif model_info.get("vocab"):
+            return generate_local(model_info["model"], tokens, model_info["vocab"])
+
+        else:
+            return "(No vocab available for generation)"
+
+    except RuntimeError as e:
+        return f"(Generation failed — runtime error: {e})"
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        return f"(Generation failed: {e})"
+
+
 @st.cache_resource
 def load_hf_model(model_name: str):
     """Load a HuggingFace model and wrap it in ModelLens. Cached across reruns."""
@@ -268,7 +308,7 @@ def tokenize_prompt(prompt, model_info):
         if all(w in inv for w in words):
             ids = [inv[w] for w in words]
             return torch.tensor([ids])
-    
+
     # Otherwise fall back to character-level encoding
     model = model_info["model"]
     vocab_size = len(vocab) if vocab else 100

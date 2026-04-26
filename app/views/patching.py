@@ -1,6 +1,7 @@
 import streamlit as st
 from modellens.analysis.comparison import align_input_dicts
 from config.prompt_sync import (
+    get_shared_clean,
     get_shared_corrupted,
     merge_chat_and_shared_clean,
     shared_prompt_status_row,
@@ -28,12 +29,13 @@ def render():
         "Measure each layer's causal importance by swapping activations "
         "between a clean and corrupted input."
     )
+    st.caption("- Compare clean vs corrupted output")
     st.caption(
-        "Behavior first: compare clean vs corrupted output above, then use effects and recovery charts to locate modules that move behavior back."
+        "Use effects and recovery charts to locate modules that move behavior back"
     )
-    shared_prompts_callout()
-    shared_prompt_status_row()
-    shared_run_hint()
+    # shared_prompts_callout()
+    # shared_prompt_status_row()
+    # shared_run_hint()
 
     # ── Check model is loaded ──
     model_info = st.session_state.get("model_info")
@@ -155,52 +157,63 @@ def render():
             key="patching_run_sidebar",
             help="Use clean & corrupted prompts from the Analysis sidebar",
         )
-    chat = st.chat_input("Enter a clean prompt (or use sidebar + Run)")
-    clean = merge_chat_and_shared_clean(chat, run_sb)
-    if run_sb and not clean:
-        st.error("Set a clean prompt in the sidebar, or use the chat bar.")
-    elif clean:
-        corrupted = get_shared_corrupted()
-        if not corrupted:
-            st.error("Set a corrupted prompt in the sidebar (Shared prompts).")
-        else:
-            with st.spinner("Running activation patching..."):
-                from config.utils import tokenize_prompt
 
-                lens.clear()
-                clean_inputs = tokenize_prompt(clean, model_info)
-                corrupted_inputs = tokenize_prompt(corrupted, model_info)
-                try:
-                    clean_inputs, corrupted_inputs, meta = align_input_dicts(
-                        clean_inputs, corrupted_inputs
+    clean = get_shared_clean()
+    corrupted = get_shared_corrupted()
+
+    if not clean:
+        st.error("Set a clean prompt on the sidebar (Shared prompts)")
+    elif not corrupted:
+        st.error("Set a corrupted prompt on the sidebar (Shared prompts)")
+    elif run_sb:
+        with st.spinner("Running activation patching..."):
+            from config.utils import tokenize_prompt
+
+            lens.clear()
+            clean_inputs = tokenize_prompt(clean, model_info)
+            corrupted_inputs = tokenize_prompt(corrupted, model_info)
+
+            try:
+                clean_inputs, corrupted_inputs, meta = align_input_dicts(
+                    clean_inputs, corrupted_inputs
+                )
+                if meta.truncated_clean or meta.truncated_corrupted:
+                    st.caption(
+                        f"Aligned clean/corrupted to {meta.common_seq_len} tokens."
                     )
-                    if meta.truncated_clean or meta.truncated_corrupted:
-                        st.caption(
-                            f"Aligned clean/corrupted to {meta.common_seq_len} tokens for patching."
-                        )
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
+            try:
                 results = run_activation_patching(lens, clean_inputs, corrupted_inputs)
+            except Exception as e:
+                st.error(f"Activation patching failed: {e}")
                 lens.clear()
-                try:
-                    fwd_cmp = compute_output_comparison(model_info, clean, corrupted)
-                except Exception:
-                    fwd_cmp = None
-                pe = results.get("patch_effects", {})
-                restored = sum(
-                    1 for v in pe.values() if isinstance(v, dict) and v.get("prediction_restored")
-                )
-                rec_text = (
-                    f"Prediction restored in {restored}/{max(len(pe), 1)} patched modules."
-                    if pe
-                    else None
-                )
+                return
 
-                st.session_state["patching_results"] = results
-                st.session_state["patching_clean_prompt"] = clean
-                st.session_state["patching_corrupted_prompt"] = corrupted
-                st.session_state["patching_forward_compare"] = fwd_cmp
-                st.session_state["patching_recovery_text"] = rec_text
+            lens.clear()
 
-                st.rerun()
+            try:
+                fwd_cmp = compute_output_comparison(model_info, clean, corrupted)
+            except Exception:
+                fwd_cmp = None
+
+            pe = results.get("patch_effects", {})
+            restored = sum(
+                1
+                for v in pe.values()
+                if isinstance(v, dict) and v.get("prediction_restored")
+            )
+            rec_text = (
+                f"Prediction restored in {restored}/{max(len(pe), 1)} patched modules."
+                if pe
+                else None
+            )
+
+            st.session_state["patching_results"] = results
+            st.session_state["patching_clean_prompt"] = clean
+            st.session_state["patching_corrupted_prompt"] = corrupted
+            st.session_state["patching_forward_compare"] = fwd_cmp
+            st.session_state["patching_recovery_text"] = rec_text
+
+            st.rerun()

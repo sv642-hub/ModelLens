@@ -150,9 +150,7 @@ def render():
             from config.utils import tokenize_prompt
 
             tokens = tokenize_prompt(DEFAULT_PROMPT, model_info)
-
             rows = compute_shape_trace(lens, tokens)
-
             st.session_state["overview_rows"] = rows
 
             s = lens.summary()

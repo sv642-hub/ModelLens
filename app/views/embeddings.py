@@ -1,6 +1,6 @@
 import streamlit as st
-
-from config.prompt_sync import merge_chat_and_shared_clean
+from config.utils import tokenize_prompt
+from config.prompt_sync import get_shared_clean
 from modellens.analysis.embeddings import run_embeddings_analysis
 from modellens.visualization import (
     plot_embedding_similarity_heatmap,
@@ -78,18 +78,22 @@ def render():
             key="embeddings_run_sidebar",
             help="Use the clean prompt from the Analysis sidebar",
         )
-    chat = st.chat_input("Enter a prompt (or use sidebar + Run)")
-    prompt = merge_chat_and_shared_clean(chat, run_sb)
-    if run_sb and not prompt:
-        st.error("Set a clean prompt in the sidebar (Shared prompts), or use the chat bar.")
-    elif prompt:
+
+    prompt = get_shared_clean()
+    if not prompt:
+        st.error("Set a clean prompt on the sidebar (Shared prompts)")
+    elif run_sb:
         with st.spinner("Running embeddings analysis..."):
             lens.clear()
 
-            from config.utils import tokenize_prompt
-
             tokens = tokenize_prompt(prompt, model_info)
-            results = run_embeddings_analysis(lens, tokens)
+
+            try:
+                results = run_embeddings_analysis(lens, tokens)
+            except Exception as e:
+                st.error(f"Embeddings analysis failed: {e}")
+                lens.clear()
+                return
 
             lens.clear()
 

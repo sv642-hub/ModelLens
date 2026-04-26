@@ -34,7 +34,9 @@ def plot_divergence_by_module(
     if not records:
         fig = go.Figure()
         fig.update_layout(
-            **default_plotly_layout(title="No divergence records", width=width, height=height)
+            **default_plotly_layout(
+                title="No divergence records", width=width, height=height
+            )
         )
         return fig
 
@@ -43,7 +45,12 @@ def plot_divergence_by_module(
     order = np.argsort(np.abs(vals))[::-1][: max(1, int(top_n))]
     vals = [vals[i] for i in order]
     names = [truncate_label(pretty_module_name(raw_names[i]), 44) for i in order]
-    colors = [family_color_map().get(infer_module_family(records[i]["module_name"]), "#64748b") for i in order]
+    colors = [
+        family_color_map().get(
+            infer_module_family(records[i]["module_name"]), "#64748b"
+        )
+        for i in order
+    ]
 
     fig = go.Figure(
         go.Bar(
@@ -75,7 +82,11 @@ def plot_family_divergence(
     by_f = divergence_result.get("by_family") or {}
     if not by_f:
         fig = go.Figure()
-        fig.update_layout(**default_plotly_layout(title="No family aggregates", width=width, height=height))
+        fig.update_layout(
+            **default_plotly_layout(
+                title="No family aggregates", width=width, height=height
+            )
+        )
         return fig
     fams = sorted(by_f.keys(), key=lambda x: x.lower())
     vals = [float(by_f[f].get(metric, 0.0)) for f in fams]
@@ -110,7 +121,11 @@ def plot_logit_lens_comparison_trajectories(
     layers = comparative.get("layers_ordered") or []
     if not layers:
         fig = go.Figure()
-        fig.update_layout(**default_plotly_layout(title="No comparative logit data", width=width, height=height))
+        fig.update_layout(
+            **default_plotly_layout(
+                title="No comparative logit data", width=width, height=height
+            )
+        )
         return fig
     x = list(range(len(layers)))
     labels = [truncate_label(pretty_module_name(n), 20) for n in layers]
@@ -124,15 +139,30 @@ def plot_logit_lens_comparison_trajectories(
         shared_xaxes=True,
         vertical_spacing=0.12,
         row_heights=[0.55, 0.45],
-        subplot_titles=("Top-1 probability (clean vs corrupted)", "Entropy delta (corrupted − clean)"),
+        subplot_titles=(
+            "Top-1 probability (clean vs corrupted)",
+            "Entropy delta (corrupted − clean)",
+        ),
     )
     fig.add_trace(
-        go.Scatter(x=x, y=cprob, mode="lines+markers", name="clean p(top1)", line=dict(color="#22c55e")),
+        go.Scatter(
+            x=x,
+            y=cprob,
+            mode="lines+markers",
+            name="clean p(top1)",
+            line=dict(color="#22c55e"),
+        ),
         row=1,
         col=1,
     )
     fig.add_trace(
-        go.Scatter(x=x, y=kprob, mode="lines+markers", name="corrupted p(top1)", line=dict(color="#ef4444")),
+        go.Scatter(
+            x=x,
+            y=kprob,
+            mode="lines+markers",
+            name="corrupted p(top1)",
+            line=dict(color="#ef4444"),
+        ),
         row=1,
         col=1,
     )
@@ -141,7 +171,9 @@ def plot_logit_lens_comparison_trajectories(
         row=2,
         col=1,
     )
-    fig.update_xaxes(tickmode="array", tickvals=x, ticktext=labels, tickangle=-45, row=2, col=1)
+    fig.update_xaxes(
+        tickmode="array", tickvals=x, ticktext=labels, tickangle=-45, row=2, col=1
+    )
     fig.update_layout(
         **default_plotly_layout(
             title=title or "Logit lens — clean vs corrupted",
@@ -165,7 +197,8 @@ def plot_attention_comparison_heatmaps(
         fig = go.Figure()
         fig.update_layout(
             **default_plotly_layout(
-                title=comparative_attn.get("error") or "Attention comparison unavailable",
+                title=comparative_attn.get("error")
+                or "Attention comparison unavailable",
                 width=width,
                 height=height,
             )
@@ -175,22 +208,46 @@ def plot_attention_comparison_heatmaps(
     wc = comparative_attn["clean_weights"].cpu().numpy()
     wk = comparative_attn["corrupted_weights"].cpu().numpy()
     dd = comparative_attn["delta_weights"].cpu().numpy()
-    labels = comparative_attn.get("token_labels") or [str(i) for i in range(wc.shape[0])]
+    labels = comparative_attn.get("token_labels") or [
+        str(i) for i in range(wc.shape[0])
+    ]
 
     fig = make_subplots(
         rows=1,
         cols=3,
-        subplot_titles=("Clean attention", "Corrupted attention", "Delta (corrupted − clean)"),
+        subplot_titles=(
+            "Clean attention",
+            "Corrupted attention",
+            "Delta (corrupted − clean)",
+        ),
         horizontal_spacing=0.06,
     )
     zmax = max(float(wc.max()), float(wk.max()), 1e-6)
     fig.add_trace(
-        go.Heatmap(z=wc, x=labels, y=labels, colorscale="Blues", zmin=0, zmax=zmax, showscale=False),
+        go.Heatmap(
+            z=wc,
+            x=labels,
+            y=labels,
+            colorscale="Blues",
+            zmin=0,
+            zmax=zmax,
+            showscale=False,
+            texttemplate="%{z:.2f}",
+        ),
         row=1,
         col=1,
     )
     fig.add_trace(
-        go.Heatmap(z=wk, x=labels, y=labels, colorscale="Blues", zmin=0, zmax=zmax, showscale=False),
+        go.Heatmap(
+            z=wk,
+            x=labels,
+            y=labels,
+            colorscale="Blues",
+            zmin=0,
+            zmax=zmax,
+            texttemplate="%{z:.2f}",
+            showscale=False,
+        ),
         row=1,
         col=2,
     )
@@ -204,6 +261,7 @@ def plot_attention_comparison_heatmaps(
             zmid=0,
             zmin=-lim,
             zmax=lim,
+            texttemplate="%{z:.2f}",
             showscale=True,
         ),
         row=1,
@@ -231,7 +289,11 @@ def plot_attention_entropy_delta_heads(
     d = comparative_attn.get("entropy_delta_per_head")
     if not d:
         fig = go.Figure()
-        fig.update_layout(**default_plotly_layout(title="No entropy delta data", width=width, height=height))
+        fig.update_layout(
+            **default_plotly_layout(
+                title="No entropy delta data", width=width, height=height
+            )
+        )
         return fig
     x = list(range(len(d)))
     fig = go.Figure(
@@ -271,8 +333,12 @@ def format_comparison_summary_html(
         _card("Δ margin", f"{s.get('margin_delta', 0):+.4f}"),
     ]
     if s.get("clean_correct") is not None:
-        parts.append(_card("Clean correct (vs target)", "Yes" if s["clean_correct"] else "No"))
-        parts.append(_card("Corrupted correct", "Yes" if s["corrupted_correct"] else "No"))
+        parts.append(
+            _card("Clean correct (vs target)", "Yes" if s["clean_correct"] else "No")
+        )
+        parts.append(
+            _card("Corrupted correct", "Yes" if s["corrupted_correct"] else "No")
+        )
     parts.append("</div>")
 
     if comparative_logit:
@@ -288,7 +354,9 @@ def format_comparison_summary_html(
         parts.append("</p>")
 
     if divergence_hint:
-        parts.append(f"<p><b>Activation drift</b> — earliest notable module: <code>{divergence_hint}</code></p>")
+        parts.append(
+            f"<p><b>Activation drift</b> — earliest notable module: <code>{divergence_hint}</code></p>"
+        )
 
     parts.append("</div>")
     return "".join(parts)
@@ -319,9 +387,13 @@ def format_patching_story_html(patching_result: Dict[str, Any]) -> str:
         f"Clean argmax token id: <code>{c1}</code> · Corrupted: <code>{s.get('corrupted_top1_token_id')}</code><br/>",
     ]
     if pred_changed is not None:
-        lines.append(f"Prediction changed under corruption: <b>{'yes' if pred_changed else 'no'}</b><br/>")
+        lines.append(
+            f"Prediction changed under corruption: <b>{'yes' if pred_changed else 'no'}</b><br/>"
+        )
     if best:
-        lines.append(f"Strongest recovery patch: <code>{truncate_label(str(best), 40)}</code><br/>")
+        lines.append(
+            f"Strongest recovery patch: <code>{truncate_label(str(best), 40)}</code><br/>"
+        )
     if restored is not None:
         lines.append(
             "Patch restores clean argmax: "

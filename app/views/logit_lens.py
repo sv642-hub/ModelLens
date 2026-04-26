@@ -2,7 +2,6 @@ import os
 import sys
 
 import streamlit as st
-
 from modellens.analysis.logit_lens import run_logit_lens, decode_logit_lens
 from modellens.visualization import (
     plot_logit_lens_confidence_panel,
@@ -15,11 +14,7 @@ _vdir = os.path.dirname(os.path.abspath(__file__))
 _appdir = os.path.dirname(_vdir)
 if _appdir not in sys.path:
     sys.path.insert(0, _appdir)
-from config.prompt_sync import (
-    get_shared_clean,
-    merge_chat_and_shared_clean,
-    shared_prompts_callout,
-)
+from config.prompt_sync import get_shared_clean
 from components import apply_temperature_to_logit_result
 
 
@@ -32,7 +27,7 @@ def render():
     st.caption(
         "This approximates what token the model seems to prefer at intermediate depth, before the final layer output."
     )
-    shared_prompts_callout()
+    # shared_prompts_callout()
 
     model_info = st.session_state.get("model_info")
     if not model_info:
@@ -164,9 +159,6 @@ def render():
         )
         st.subheader("Model output")
         st.markdown(f"{st.session_state['logit_lens_generation']}")
-        st.caption(
-            "Use this generated continuation as behavior-level context for the internal logit-lens trajectories above."
-        )
 
     c1, _ = st.columns([1, 5])
     with c1:
@@ -176,40 +168,23 @@ def render():
             key="logit_lens_run_sidebar",
             help="Use the clean prompt from the Analysis sidebar",
         )
-    chat = st.chat_input("Enter a prompt (or use sidebar + Run)")
-    prompt = merge_chat_and_shared_clean(chat, run_sb)
-    if run_sb and not prompt:
-        st.error("Set a clean prompt in the sidebar (Shared prompts), or use the chat bar.")
-    elif prompt:
+    # chat = st.chat_input("Enter a prompt (or use sidebar + Run)")
+    prompt = get_shared_clean()
+    if not prompt:
+        st.error("Set a clean prompt on the sidebar (Shared prompts)")
+    elif run_sb:
         with st.spinner("Running logit lens..."):
-            lens.clear()
-            lens.attach_all()
+            lens.clear()  # Clear all hooks (in case there were any)
 
-            from config.utils import tokenize_prompt, generate_local
+            from config.utils import tokenize_prompt, predict
 
+            # Run logit lens
             tokens = tokenize_prompt(prompt, model_info)
-
             results = run_logit_lens(lens, tokens, top_k=top_k)
             lens.clear()
 
-            generation = ""
-            if tokenizer:
-                import torch
-
-                input_ids = tokens["input_ids"]
-                with torch.no_grad():
-                    output_ids = model_info["model"].generate(
-                        input_ids,
-                        max_new_tokens=max_tokens,
-                        do_sample=False,
-                    )
-                generation = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-            else:
-                vocab = model_info.get("vocab", {})
-                if vocab:
-                    generation = generate_local(model_info["model"], tokens, vocab)
-                else:
-                    generation = "(No vocab available for generation)"
+            # Run prediction on model
+            generation = predict(model_info, tokens, max_tokens=max_tokens)
 
             st.session_state["logit_lens_results_raw"] = results
             st.session_state.pop("logit_lens_results", None)

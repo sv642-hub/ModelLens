@@ -1,4 +1,4 @@
-import streamlit as st
+from config.models import HF_MODEL_MAP
 from views import (
     model_overview,
     logit_lens,
@@ -64,11 +64,4 @@ TAB_CATEGORIES = {
     "Training": [
         "Training Snapshot",
     ],
-}
-
-HF_MODEL_MAP = {
-    "GPT-2": "gpt2",
-    "GPT-2 Medium": "gpt2-medium",
-    "GPT-2 Large": "gpt2-large",
-    "GPT-2 XL": "gpt2-xl",
 }

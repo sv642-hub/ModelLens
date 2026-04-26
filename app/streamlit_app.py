@@ -113,10 +113,7 @@ with st.sidebar:
 
         st.divider()
         st.markdown("**Shared prompts**")
-        st.caption(
-            "Same clean and corrupted text on every analysis page — edit here once, "
-            "or send from a page’s chat bar (it updates these fields)."
-        )
+        st.caption("Prompts to use in every analysis tab")
         st.text_area(
             "Clean prompt",
             key=SHARED_CLEAN,
